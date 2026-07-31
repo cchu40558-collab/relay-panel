@@ -174,6 +174,32 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 	}
 	assertXrayTemplateHasLineRoute(t, template.Value, "line-1-in", "line-1-out")
 
+	var managedClient model.ClientRecord
+	if err := database.GetDB().Where("email = ?", "line-1-user").First(&managedClient).Error; err != nil {
+		t.Fatalf("load managed line client: %v", err)
+	}
+	if managedClient.UUID != appliedReality.Config["clientId"] || managedClient.SubID != "line-1" || !managedClient.Enable {
+		t.Fatalf("managed line client = %+v, config=%+v", managedClient, appliedReality.Config)
+	}
+	var clientLink model.ClientInbound
+	if err := database.GetDB().Where("client_id = ? AND inbound_id = ?", managedClient.Id, *appliedReality.InboundId).First(&clientLink).Error; err != nil {
+		t.Fatalf("load managed line client link: %v", err)
+	}
+	if clientLink.FlowOverride != "xtls-rprx-vision" {
+		t.Fatalf("managed line client flow = %q", clientLink.FlowOverride)
+	}
+	xrayConfig, err := (&service.XrayService{}).GetXrayConfig()
+	if err != nil {
+		t.Fatalf("build runtime Xray config: %v", err)
+	}
+	runtimeConfig, err := json.Marshal(xrayConfig)
+	if err != nil {
+		t.Fatalf("marshal runtime Xray config: %v", err)
+	}
+	if !strings.Contains(string(runtimeConfig), appliedReality.Config["clientId"]) {
+		t.Fatalf("runtime Xray config lost line client %q: %s", appliedReality.Config["clientId"], runtimeConfig)
+	}
+
 	share := doHostReq(t, engine, http.MethodGet, "/panel/api/lines/1/share", nil)
 	if !share.Success {
 		t.Fatalf("share reality not successful: %s", share.Msg)
@@ -319,6 +345,10 @@ func TestLineController_DeleteAndBatchDelete(t *testing.T) {
 	}
 	if strings.Contains(template.Value, "line-1-in") || strings.Contains(template.Value, "line-1-out") {
 		t.Fatalf("deleted line artifacts remain in template: %s", template.Value)
+	}
+	var managedClientCount int64
+	if err := database.GetDB().Model(&model.ClientRecord{}).Where("email = ?", "line-1-user").Count(&managedClientCount).Error; err != nil || managedClientCount != 0 {
+		t.Fatalf("deleted line client count = %d, err=%v", managedClientCount, err)
 	}
 
 	batch := doHostReq(t, engine, http.MethodPost, "/panel/api/lines/batch-delete", map[string]any{"ids": []int{secondID}})

@@ -152,6 +152,7 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	}
 	xrayConfig.LogConfig = resolveXrayLogPaths(xrayConfig.LogConfig)
 	xrayConfig.API = ensureAPIServices(xrayConfig.API)
+	ensureAPIInbound(xrayConfig)
 	xrayConfig.Policy = ensureStatsPolicy(xrayConfig.Policy)
 	xrayConfig.RouterConfig = stripDisabledRules(xrayConfig.RouterConfig)
 	// Template outbounds authored before the xray-core #6258 XHTTP rename may
@@ -691,12 +692,9 @@ func mergeSubscriptionOutbounds(cfg *xray.Config, prepend, appendList []any) {
 	cfg.OutboundConfigs = json_util.RawMessage(combined)
 }
 
-// ensureAPIServices guarantees the gRPC services the panel depends on are
-// listed in the generated config's api block: HandlerService and StatsService
-// have always been required for inbound/user management and traffic polling,
-// and RoutingService enables hot routing reload on templates saved before it
-// was added to the default template. The stored template itself is not
-// modified — only the generated runtime config.
+// ensureAPIServices guarantees the gRPC services and tag the panel depends on
+// are present in the generated config's api block. The stored template itself
+// is not modified — only the generated runtime config.
 func ensureAPIServices(api json_util.RawMessage) json_util.RawMessage {
 	if len(api) == 0 {
 		// No api block means the panel's API integration is deliberately
@@ -714,14 +712,18 @@ func ensureAPIServices(api json_util.RawMessage) json_util.RawMessage {
 			have[name] = true
 		}
 	}
-	added := false
+	changed := false
 	for _, name := range []string{"HandlerService", "StatsService", "RoutingService"} {
 		if !have[name] {
 			services = append(services, name)
-			added = true
+			changed = true
 		}
 	}
-	if !added {
+	if tag, _ := parsed["tag"].(string); strings.TrimSpace(tag) == "" {
+		parsed["tag"] = "api"
+		changed = true
+	}
+	if !changed {
 		return api
 	}
 	parsed["services"] = services
@@ -730,6 +732,42 @@ func ensureAPIServices(api json_util.RawMessage) json_util.RawMessage {
 		return api
 	}
 	return out
+}
+
+// ensureAPIInbound restores the loopback API inbound for templates created
+// before it was part of the default configuration. Without an inbound whose
+// tag matches api.tag, Xray starts without an API endpoint for the panel.
+func ensureAPIInbound(cfg *xray.Config) {
+	if cfg == nil || len(cfg.API) == 0 {
+		return
+	}
+
+	var api map[string]any
+	if err := json.Unmarshal(cfg.API, &api); err != nil {
+		return
+	}
+	tag, _ := api["tag"].(string)
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return
+	}
+	for _, inbound := range cfg.InboundConfigs {
+		if inbound.Tag == tag {
+			return
+		}
+	}
+
+	var defaults xray.Config
+	if err := json.Unmarshal([]byte(xrayTemplateConfig), &defaults); err != nil {
+		return
+	}
+	for _, inbound := range defaults.InboundConfigs {
+		if inbound.Tag == "api" {
+			inbound.Tag = tag
+			cfg.InboundConfigs = append(cfg.InboundConfigs, inbound)
+			return
+		}
+	}
 }
 
 // ensureStatsPolicy guarantees every policy level in the generated config has

@@ -391,6 +391,9 @@ func (s *LineService) DeleteLine(id int) (*LineDeleteResult, error) {
 		if err := removeLineTemplateArtifacts(tx, line.OutboundTag, inboundTag); err != nil {
 			return err
 		}
+		if err := removeLineManagedClient(tx, line.Id); err != nil {
+			return err
+		}
 		if err := tx.Where("tag = ?", inboundTag).Delete(&model.Inbound{}).Error; err != nil {
 			return err
 		}
@@ -1149,6 +1152,9 @@ func applyCloudflareXray(tx *gorm.DB, line *model.LineProfile, outbound *model.L
 			return 0, err
 		}
 	}
+	if err := upsertLineManagedClient(tx, line, inbound.Id, config); err != nil {
+		return 0, err
+	}
 
 	if err := upsertLineOutboundInTemplate(tx, outboundTag, inboundTag, outbound); err != nil {
 		return 0, err
@@ -1244,6 +1250,9 @@ func applyRealityXray(tx *gorm.DB, line *model.LineProfile, outbound *model.Line
 		if err := tx.Create(inbound).Error; err != nil {
 			return 0, err
 		}
+	}
+	if err := upsertLineManagedClient(tx, line, inbound.Id, config); err != nil {
+		return 0, err
 	}
 
 	if err := upsertLineOutboundInTemplate(tx, outboundTag, inboundTag, outbound); err != nil {
@@ -1410,6 +1419,91 @@ func buildRealityInbound(line *model.LineProfile, inboundTag string, config map[
 	}
 }
 
+// upsertLineManagedClient keeps the generated share-link identity in 3x-ui's
+// normalized client tables. Xray builds active users from these tables, not
+// from the legacy clients array persisted in an inbound's settings JSON.
+func upsertLineManagedClient(tx *gorm.DB, line *model.LineProfile, inboundID int, config map[string]string) error {
+	if tx == nil || line == nil || inboundID <= 0 {
+		return fmt.Errorf("line client requires transaction, line, and inbound")
+	}
+	clientID := strings.TrimSpace(config["clientId"])
+	if _, err := uuid.Parse(clientID); err != nil {
+		return fmt.Errorf("line client ID is invalid: %w", err)
+	}
+
+	email := lineManagedClientEmail(line.Id)
+	subID := lineManagedClientSubID(line.Id)
+	flow := ""
+	if line.Type == LineTypeReality {
+		flow = strings.TrimSpace(config["realityFlow"])
+	}
+
+	var record model.ClientRecord
+	err := tx.Where("email = ?", email).First(&record).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		record = model.ClientRecord{
+			Email:  email,
+			SubID:  subID,
+			UUID:   clientID,
+			Flow:   flow,
+			Enable: true,
+		}
+		if err := tx.Create(&record).Error; err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	default:
+		if record.SubID != subID {
+			return fmt.Errorf("managed line client email is already owned by another client: %s", email)
+		}
+		if err := tx.Model(&record).Updates(map[string]any{
+			"uuid":   clientID,
+			"flow":   flow,
+			"enable": true,
+			"sub_id": subID,
+		}).Error; err != nil {
+			return err
+		}
+	}
+
+	link := model.ClientInbound{ClientId: record.Id, InboundId: inboundID, FlowOverride: flow}
+	return tx.Where("client_id = ? AND inbound_id = ?", record.Id, inboundID).
+		Assign(map[string]any{"flow_override": flow}).
+		FirstOrCreate(&link).Error
+}
+
+func removeLineManagedClient(tx *gorm.DB, lineID int) error {
+	if tx == nil || lineID <= 0 {
+		return nil
+	}
+	email := lineManagedClientEmail(lineID)
+	var record model.ClientRecord
+	err := tx.Where("email = ?", email).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if record.SubID != lineManagedClientSubID(lineID) {
+		return fmt.Errorf("refusing to remove unmanaged client with line email: %s", email)
+	}
+	if err := tx.Where("client_id = ?", record.Id).Delete(&model.ClientInbound{}).Error; err != nil {
+		return err
+	}
+	return tx.Delete(&record).Error
+}
+
+func lineManagedClientEmail(lineID int) string {
+	return fmt.Sprintf("line-%d-user", lineID)
+}
+
+func lineManagedClientSubID(lineID int) string {
+	return fmt.Sprintf("line-%d", lineID)
+}
+
 func upsertLineOutboundInTemplate(tx *gorm.DB, outboundTag string, inboundTag string, outbound *model.LineOutbound) error {
 	raw, err := getXrayTemplateConfigTx(tx)
 	if err != nil {
@@ -1480,7 +1574,7 @@ func getXrayTemplateConfigTx(tx *gorm.DB) (string, error) {
 	var setting model.Setting
 	err := tx.Where("key = ?", "xrayTemplateConfig").First(&setting).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		base := `{"log":{},"routing":{"rules":[]},"inbounds":[],"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"blocked","protocol":"blackhole"}],"policy":{},"api":{},"stats":{}}`
+		base := xrayTemplateConfig
 		if err := tx.Create(&model.Setting{Key: "xrayTemplateConfig", Value: base}).Error; err != nil {
 			return "", err
 		}

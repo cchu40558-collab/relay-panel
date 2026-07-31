@@ -48,6 +48,17 @@ func TestEnsureAPIServices(t *testing.T) {
 		t.Fatalf("tag must be preserved, got %q", parsed.Tag)
 	}
 
+	// Some old templates already contain every required service but predate
+	// Xray's required api tag. The tag must be repaired even without a service
+	// list change.
+	out = ensureAPIServices(json_util.RawMessage(`{"services":["HandlerService","StatsService","RoutingService"]}`))
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Tag != "api" {
+		t.Fatalf("missing api tag must be repaired, got %q", parsed.Tag)
+	}
+
 	// complete api block is returned unchanged (no marshal churn)
 	full := json_util.RawMessage(`{"services":["HandlerService","StatsService","RoutingService"],"tag":"api"}`)
 	if got := ensureAPIServices(full); string(got) != string(full) {
@@ -57,6 +68,25 @@ func TestEnsureAPIServices(t *testing.T) {
 	// absent api block stays absent
 	if got := ensureAPIServices(nil); got != nil {
 		t.Fatalf("nil api block must stay nil, got %s", got)
+	}
+}
+
+func TestEnsureAPIInbound(t *testing.T) {
+	cfg := &xray.Config{
+		API: json_util.RawMessage(`{"services":["HandlerService"],"tag":"api"}`),
+	}
+	ensureAPIInbound(cfg)
+	if len(cfg.InboundConfigs) != 1 {
+		t.Fatalf("expected one restored API inbound, got %d", len(cfg.InboundConfigs))
+	}
+	inbound := cfg.InboundConfigs[0]
+	if inbound.Tag != "api" || inbound.Port != defaultXrayAPIPort || inbound.Protocol != "tunnel" {
+		t.Fatalf("unexpected restored API inbound: %+v", inbound)
+	}
+
+	ensureAPIInbound(cfg)
+	if len(cfg.InboundConfigs) != 1 {
+		t.Fatalf("API inbound must not be duplicated, got %d", len(cfg.InboundConfigs))
 	}
 }
 
