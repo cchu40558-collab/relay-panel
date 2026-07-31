@@ -87,6 +87,9 @@ func TestApplyCloudflareNginxWithExecutorSuccessBacksUpAndReloads(t *testing.T) 
 	if got := string(executor.files[path]); !strings.Contains(got, "proxy_pass http://127.0.0.1:30001;") {
 		t.Fatalf("new config not written: %s", got)
 	}
+	if got := string(executor.files[path]); !strings.Contains(got, "ssl_certificate /etc/nginx/ssl/origin.crt;") || !strings.Contains(got, "ssl_certificate_key /etc/nginx/ssl/origin.key;") {
+		t.Fatalf("TLS paths not written: %s", got)
+	}
 	wantCommands := []string{"nginx -t", "systemctl reload nginx"}
 	if !reflect.DeepEqual(executor.commands, wantCommands) {
 		t.Fatalf("commands = %+v, want %+v", executor.commands, wantCommands)
@@ -152,6 +155,24 @@ func TestApplyCloudflareNginxWithExecutorNginxTestFailureRemovesNewConfig(t *tes
 	}
 }
 
+func TestApplyCloudflareNginxWithExecutorRequiresTLSPathsBeforeWrite(t *testing.T) {
+	executor := newFakeNginxExecutor()
+	path := "/etc/nginx/conf.d/x-ui-line-1.conf"
+	line, config := testCloudflareNginxLine(path)
+	delete(config, "nginxCertFile")
+
+	_, err := applyCloudflareNginxWithExecutor(line, config, executor)
+	if err == nil || !strings.Contains(err.Error(), "origin certificate path is required") {
+		t.Fatalf("error = %v, want missing certificate path", err)
+	}
+	if len(executor.commands) != 0 {
+		t.Fatalf("commands = %v, want no writes or Nginx commands", executor.commands)
+	}
+	if _, ok := executor.files[path]; ok {
+		t.Fatalf("config must not be written without TLS paths")
+	}
+}
+
 func testCloudflareNginxLine(path string) (model.LineProfile, map[string]string) {
 	return model.LineProfile{
 			Id:        1,
@@ -162,6 +183,8 @@ func testCloudflareNginxLine(path string) (model.LineProfile, map[string]string)
 		}, map[string]string{
 			"nginxApply":      "true",
 			"nginxConfigPath": path,
+			"nginxCertFile":   "/etc/nginx/ssl/origin.crt",
+			"nginxKeyFile":    "/etc/nginx/ssl/origin.key",
 			"wsPath":          "/ws",
 			"localXrayPort":   "30001",
 		}

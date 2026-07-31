@@ -2062,9 +2062,17 @@ func buildNginxPlan(line model.LineProfile, config map[string]string) string {
 	if host == "" {
 		host = "_"
 	}
+	certFile := strings.TrimSpace(config["nginxCertFile"])
+	keyFile := strings.TrimSpace(config["nginxKeyFile"])
+	tlsConfig := "    # Set nginxCertFile and nginxKeyFile before enabling Nginx apply."
+	if certFile != "" && keyFile != "" {
+		tlsConfig = fmt.Sprintf("    ssl_certificate %s;\n    ssl_certificate_key %s;\n    ssl_protocols TLSv1.2 TLSv1.3;", certFile, keyFile)
+	}
 	return fmt.Sprintf(`server {
     listen %d ssl http2;
     server_name %s;
+
+%s
 
     location %s {
         proxy_http_version 1.1;
@@ -2073,7 +2081,7 @@ func buildNginxPlan(line model.LineProfile, config map[string]string) string {
         proxy_set_header Host $host;
         proxy_pass http://127.0.0.1:%s;
     }
-}`, line.EntryPort, host, config["wsPath"], config["localXrayPort"])
+}`, line.EntryPort, host, tlsConfig, config["wsPath"], config["localXrayPort"])
 }
 
 func defaultNginxConfigPath(lineID int) string {
@@ -2098,9 +2106,34 @@ func applyCloudflareNginxWithExecutor(line model.LineProfile, config map[string]
 	if err := validateNginxConfigPathForGOOS(path, executor.GOOS()); err != nil {
 		return "", err
 	}
+	if err := validateNginxTLSPaths(config); err != nil {
+		return "", err
+	}
 
 	body := buildNginxPlan(line, config) + "\n"
 	return applyNginxConfig(path, body, executor)
+}
+
+func validateNginxTLSPaths(config map[string]string) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{name: "Nginx origin certificate path", value: config["nginxCertFile"]},
+		{name: "Nginx origin key path", value: config["nginxKeyFile"]},
+	} {
+		path := strings.TrimSpace(field.value)
+		if path == "" {
+			return fmt.Errorf("%s is required when writing Nginx configuration", field.name)
+		}
+		if !strings.HasPrefix(path, "/") {
+			return fmt.Errorf("%s must be an absolute path", field.name)
+		}
+		if strings.ContainsAny(path, "\r\n;{}\"'") {
+			return fmt.Errorf("%s contains an invalid character", field.name)
+		}
+	}
+	return nil
 }
 
 func applyNginxConfig(path string, body string, executor nginxExecutor) (string, error) {

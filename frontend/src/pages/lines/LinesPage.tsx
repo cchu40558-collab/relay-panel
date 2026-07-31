@@ -119,6 +119,8 @@ type LineFormValues = {
   wsPath?: string;
   localXrayPort?: number;
   nginxConfigPath?: string;
+  nginxCertFile?: string;
+  nginxKeyFile?: string;
   nginxApply?: boolean;
   realitySni?: string;
   realityShortId?: string;
@@ -263,6 +265,8 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
   if (values.wsPath) config.wsPath = values.wsPath;
   if (values.localXrayPort) config.localXrayPort = String(values.localXrayPort);
   if (values.nginxConfigPath) config.nginxConfigPath = values.nginxConfigPath;
+  if (values.nginxCertFile) config.nginxCertFile = values.nginxCertFile;
+  if (values.nginxKeyFile) config.nginxKeyFile = values.nginxKeyFile;
   config.nginxApply = values.nginxApply ? 'true' : 'false';
   if (values.realitySni) config.realitySni = values.realitySni;
   if (values.realityShortId) config.realityShortId = values.realityShortId;
@@ -294,6 +298,8 @@ function detailToFormValues(line: LineDetail): LineFormValues {
     wsPath: config.wsPath,
     localXrayPort: config.localXrayPort ? Number(config.localXrayPort) : undefined,
     nginxConfigPath: config.nginxConfigPath,
+    nginxCertFile: config.nginxCertFile,
+    nginxKeyFile: config.nginxKeyFile,
     nginxApply: config.nginxApply === 'true',
     realitySni: config.realitySni,
     realityShortId: config.realityShortId,
@@ -539,6 +545,36 @@ function LineEditor({
               </Form.Item>
               <Form.Item label="Nginx 配置路径" name="nginxConfigPath">
                 <Input placeholder="/etc/nginx/conf.d/x-ui-line-1.conf" />
+              </Form.Item>
+              <Form.Item
+                label="源站证书路径"
+                name="nginxCertFile"
+                dependencies={['nginxApply']}
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator: async (_: unknown, value?: string) => {
+                      if (!getFieldValue('nginxApply') || value?.trim()) return Promise.resolve();
+                      return Promise.reject(new Error('启用 Nginx 写入时必须填写源站证书路径'));
+                    },
+                  }),
+                ]}
+              >
+                <Input placeholder="/etc/nginx/ssl/origin.crt" />
+              </Form.Item>
+              <Form.Item
+                label="源站私钥路径"
+                name="nginxKeyFile"
+                dependencies={['nginxApply']}
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator: async (_: unknown, value?: string) => {
+                      if (!getFieldValue('nginxApply') || value?.trim()) return Promise.resolve();
+                      return Promise.reject(new Error('启用 Nginx 写入时必须填写源站私钥路径'));
+                    },
+                  }),
+                ]}
+              >
+                <Input placeholder="/etc/nginx/ssl/origin.key" />
               </Form.Item>
               <Form.Item label="写入 Nginx 并重载" name="nginxApply" valuePropName="checked">
                 <Switch />
