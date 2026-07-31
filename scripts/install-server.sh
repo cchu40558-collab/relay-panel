@@ -8,6 +8,7 @@ set -Eeuo pipefail
 # Important env vars:
 #   PANEL_REPO_URL       Git repository to install from. Required on first install.
 #   PANEL_REPO_REF       Branch, tag, or commit. Default: main
+#   PANEL_UPGRADE        Set to true to preserve the installed panel settings and data.
 #   PANEL_PORT           Web panel port. Default: 2053
 #   PANEL_WEB_BASE_PATH  Web base path. Default: random
 #   PANEL_USERNAME       Login username. Default: random
@@ -26,6 +27,7 @@ ENV_FILE="${ENV_FILE:-/etc/default/line-panel}"
 RESULT_FILE="${RESULT_FILE:-${DATA_DIR}/install-result.env}"
 SERVICE_FILE="${SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
 PANEL_REPO_REF="${PANEL_REPO_REF:-main}"
+PANEL_UPGRADE="${PANEL_UPGRADE:-false}"
 PANEL_PORT="${PANEL_PORT:-2053}"
 PANEL_INSTALL_NGINX="${PANEL_INSTALL_NGINX:-true}"
 PANEL_INSTALL_XRAY="${PANEL_INSTALL_XRAY:-true}"
@@ -45,6 +47,10 @@ log() {
 die() {
   echo "ERROR: $*" >&2
   exit 1
+}
+
+is_upgrade() {
+  [[ "${PANEL_UPGRADE}" == "true" ]]
 }
 
 rand_text() {
@@ -162,11 +168,35 @@ build_panel() {
   log "Building backend"
   cd "$SOURCE_DIR"
   export CGO_ENABLED=1
-  go build -trimpath -ldflags="-s -w" -o "${INSTALL_ROOT}/${APP_NAME}" .
+  local new_binary="${INSTALL_ROOT}/.${APP_NAME}.new"
+  rm -f "$new_binary"
+  go build -trimpath -ldflags="-s -w" -o "$new_binary" .
+  install -m 0755 "$new_binary" "${INSTALL_ROOT}/${APP_NAME}"
+  rm -f "$new_binary"
   chmod 0755 "${INSTALL_ROOT}/${APP_NAME}"
 }
 
+backup_existing_install() {
+  is_upgrade || return
+  [[ -x "${INSTALL_ROOT}/${APP_NAME}" ]] || die "Upgrade requires an existing ${INSTALL_ROOT}/${APP_NAME}"
+  [[ -f "$ENV_FILE" ]] || die "Upgrade requires an existing $ENV_FILE"
+
+  local backup_dir
+  backup_dir="/var/backups/${APP_NAME}/$(date +%Y%m%d-%H%M%S)"
+  log "Backing up current installation to ${backup_dir}"
+  install -d -m 0700 "$backup_dir"
+  cp -a "${INSTALL_ROOT}/${APP_NAME}" "$backup_dir/${APP_NAME}"
+  cp -a "$ENV_FILE" "$backup_dir/environment"
+  [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "$backup_dir/${SERVICE_NAME}.service"
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "$backup_dir/data"
+}
+
 write_env() {
+  if is_upgrade; then
+    log "Preserving existing panel environment, account, and web path"
+    return
+  fi
+
   log "Writing environment"
   mkdir -p "$INSTALL_ROOT" "$DATA_DIR" "$LOG_DIR" "$BIN_DIR"
   chmod 0755 "$INSTALL_ROOT" "$LOG_DIR" "$BIN_DIR"
@@ -259,7 +289,12 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$SERVICE_NAME"
+  systemctl enable "$SERVICE_NAME"
+  if is_upgrade; then
+    systemctl restart "$SERVICE_NAME"
+  else
+    systemctl start "$SERVICE_NAME"
+  fi
 }
 
 print_result() {
@@ -279,6 +314,7 @@ main() {
   ensure_node
   mkdir -p "$INSTALL_ROOT"
   checkout_source
+  backup_existing_install
   build_panel
   write_env
   install_xray
