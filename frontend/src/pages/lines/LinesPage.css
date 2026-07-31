@@ -1,0 +1,366 @@
+.lines-layout {
+  min-height: 100vh;
+  background: var(--ant-color-bg-layout);
+}
+
+.lines-content {
+  min-width: 0;
+  background: transparent;
+}
+
+.lines-page {
+  padding: 24px;
+}
+
+.lines-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.lines-header .ant-typography {
+  margin-top: 0;
+  margin-bottom: 4px;
+}
+
+.line-batch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  background: var(--ant-color-bg-container);
+}
+
+.line-column-title {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  padding-right: 10px;
+}
+
+.line-column-resize-handle {
+  position: absolute;
+  z-index: 1;
+  top: -10px;
+  right: -9px;
+  bottom: -10px;
+  width: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: col-resize;
+}
+
+.line-column-resize-handle::after {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  bottom: 5px;
+  width: 1px;
+  background: transparent;
+  content: '';
+}
+
+.line-column-resize-handle:hover::after,
+.line-column-resize-handle:focus-visible::after {
+  background: var(--ant-color-primary);
+}
+
+body.line-column-resizing,
+body.line-column-resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.line-form-shell {
+  max-width: 1040px;
+}
+
+.line-empty-panel {
+  padding: 40px 0;
+}
+
+.line-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 4px 20px;
+}
+
+.line-form-grid .ant-input-number {
+  width: 100%;
+}
+
+.line-subsection {
+  margin-top: 14px;
+  padding-top: 18px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.line-actions {
+  margin-top: 12px;
+}
+
+.line-back-button {
+  height: auto;
+  padding: 0;
+  margin-bottom: 8px;
+}
+
+.line-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(280px, 440px));
+  gap: 20px;
+}
+
+.line-type-option {
+  min-height: 320px;
+  padding: 24px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  background: var(--ant-color-bg-container);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.line-type-option .ant-typography {
+  margin-top: 0;
+}
+
+.line-type-option .ant-btn {
+  margin-top: auto;
+}
+
+.line-type-chain {
+  width: 100%;
+  padding: 0;
+  margin: 8px 0 24px;
+  list-style: none;
+}
+
+.line-type-chain li {
+  position: relative;
+  padding: 7px 0 7px 22px;
+  border-left: 1px solid var(--ant-color-border);
+}
+
+.line-type-chain li::before {
+  position: absolute;
+  left: -5px;
+  top: 13px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ant-color-primary);
+  content: '';
+}
+
+.line-detail-alert {
+  max-width: 1040px;
+  margin-bottom: 20px;
+}
+
+.line-detail-tabs {
+  max-width: 1040px;
+}
+
+.line-overview,
+.line-health-panel {
+  max-width: 900px;
+}
+
+.line-health-panel {
+  padding: 20px 0;
+}
+
+.line-log-list {
+  max-width: 900px;
+}
+
+.line-log-item {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.line-log-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.line-log-heading .ant-typography-secondary {
+  margin-left: auto;
+}
+
+.line-log-item .ant-typography {
+  margin: 8px 0 0;
+}
+
+.diagnostic-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin-bottom: 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  background: var(--ant-color-bg-container);
+}
+
+.diagnostic-status-strip span {
+  min-width: 150px;
+  padding: 14px 18px;
+  border-right: 1px solid var(--ant-color-border-secondary);
+}
+
+.diagnostic-error-count {
+  color: var(--ant-color-error);
+}
+
+.diagnostic-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.diagnostic-filters .ant-select {
+  min-width: 160px;
+}
+
+.diagnostic-summary-button {
+  max-width: 440px;
+  padding: 0;
+  overflow: hidden;
+  color: var(--ant-color-text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.diagnostic-summary-button:hover {
+  color: var(--ant-color-primary);
+}
+
+.line-link-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--ant-color-primary);
+  cursor: pointer;
+}
+
+.line-link-button:hover {
+  text-decoration: underline;
+}
+
+.line-chain-cell {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.line-share-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.line-plan-shell {
+  max-width: 1040px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.line-chain-full {
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  background: var(--ant-color-fill-quaternary);
+  line-height: 1.6;
+}
+
+.line-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.line-plan-box {
+  margin-bottom: 16px;
+}
+
+.line-plan-list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}
+
+.line-code-preview {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  background: var(--ant-color-fill-quaternary);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 760px) {
+  .lines-page {
+    padding: 16px;
+  }
+
+  .lines-header {
+    display: block;
+  }
+
+  .line-batch-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .line-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .line-plan-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .line-type-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .diagnostic-status-strip span {
+    flex: 1 1 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--ant-color-border-secondary);
+  }
+
+  .diagnostic-status-strip span:last-child {
+    border-bottom: 0;
+  }
+
+  .line-log-heading .ant-typography-secondary {
+    width: 100%;
+    margin-left: 0;
+  }
+}

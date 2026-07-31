@@ -24,6 +24,12 @@ export const keys = {
     slim: () => ['inbounds', 'slim'] as const,
     options: () => ['inbounds', 'options'] as const,
   },
+  lines: {
+    root: () => ['lines'] as const,
+    list: () => ['lines', 'list'] as const,
+    detail: (id: number) => ['lines', 'detail', id] as const,
+    types: () => ['lines', 'types'] as const,
+  },
   clients: {
     root: () => ['clients'] as const,
     list: (params: unknown) => ['clients', 'list', params] as const,

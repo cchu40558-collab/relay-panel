@@ -3,12 +3,12 @@ import { createBrowserRouter, type RouteObject } from 'react-router';
 
 import PanelLayout from '@/layouts/PanelLayout';
 
-const IndexPage = lazy(() => import('@/pages/index/IndexPage'));
 const InboundsPage = lazy(() => import('@/pages/inbounds/InboundsPage'));
 const ClientsPage = lazy(() => import('@/pages/clients/ClientsPage'));
 const GroupsPage = lazy(() => import('@/pages/groups/GroupsPage'));
 const NodesPage = lazy(() => import('@/pages/nodes/NodesPage'));
 const HostsPage = lazy(() => import('@/pages/hosts/HostsPage'));
+const LinesPage = lazy(() => import('@/pages/lines/LinesPage'));
 const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 const XrayPage = lazy(() => import('@/pages/xray/XrayPage'));
 const ApiDocsPage = lazy(() => import('@/pages/api-docs/ApiDocsPage'));
@@ -22,7 +22,14 @@ const routes: RouteObject[] = [
     path: '/',
     element: <PanelLayout />,
     children: [
-      { index: true, element: withSuspense(<IndexPage />) },
+      { index: true, element: withSuspense(<LinesPage />) },
+      { path: 'lines', element: withSuspense(<LinesPage />) },
+      { path: 'lines/:id', element: withSuspense(<LinesPage />) },
+      { path: 'lines/:id/edit', element: withSuspense(<LinesPage />) },
+      { path: 'lines/deploy', element: withSuspense(<LinesPage />) },
+      { path: 'lines/deploy/cloudflare', element: withSuspense(<LinesPage />) },
+      { path: 'lines/deploy/reality', element: withSuspense(<LinesPage />) },
+      { path: 'diagnostics', element: withSuspense(<LinesPage />) },
       { path: 'inbounds', element: withSuspense(<InboundsPage />) },
       { path: 'clients', element: withSuspense(<ClientsPage />) },
       { path: 'groups', element: withSuspense(<GroupsPage />) },

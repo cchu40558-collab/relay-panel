@@ -100,6 +100,59 @@ export const sections: readonly Section[] = [
   },
 
   {
+    id: 'lines',
+    title: 'Lines',
+    description:
+      'Simplified line deployment API used by the custom panel. It saves proxy chains, writes supported Xray line config, and can optionally apply generated Nginx config when enabled.',
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/panel/api/line-types',
+        summary: 'List supported line templates: Cloudflare main line, Reality direct, and Trojan direct.',
+        response:
+          '{\n  "success": true,\n  "obj": [\n    {\n      "type": "cloudflare_ws_tls",\n      "name": "Cloudflare 主线路",\n      "description": "Cloudflare 橙云 -> Nginx -> VLESS WS TLS -> 住宅出口"\n    }\n  ]\n}',
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/lines',
+        summary: 'List saved line drafts in the table view.',
+        response:
+          '{\n  "success": true,\n  "obj": [\n    {\n      "id": 1,\n      "name": "Cloudflare 主线路",\n      "type": "cloudflare_ws_tls",\n      "status": "draft",\n      "entryHost": "proxy.example.com",\n      "entryPort": 8443\n    }\n  ]\n}',
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/lines/:id',
+        summary: 'Get one saved line draft with its residential outbound and type-specific config.',
+        params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }],
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/lines',
+        summary: 'Create a line draft. This does not apply server configuration yet.',
+        body:
+          '{\n  "type": "cloudflare_ws_tls",\n  "name": "Cloudflare 主线路",\n  "entryHost": "proxy.example.com",\n  "entryPort": 8443,\n  "outboundType": "socks5",\n  "outboundHost": "residential.example.com",\n  "outboundPort": 1080,\n  "outboundUsername": "user",\n  "outboundPassword": "secret",\n  "config": { "wsPath": "/ws" }\n}',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/lines/:id',
+        summary: 'Update a line draft. Empty outboundPassword keeps the previous password.',
+        params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }],
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/lines/:id/apply',
+        summary: 'Run the line apply pipeline. Cloudflare lines write Xray inbound/outbound config and optionally write/reload Nginx when nginxApply is enabled.',
+        params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }],
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/lines/prepare',
+        summary: 'Return default display values for a line type. Kept for UI helpers while the full deployment flow is being built.',
+      },
+    ],
+  },
+
+  {
     id: 'inbounds',
     title: 'Inbounds',
     description:

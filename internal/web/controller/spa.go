@@ -36,6 +36,10 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.Use(middleware.CSRFMiddleware())
 
 	g.GET("/", a.panelSPA)
+	g.GET("/lines", a.panelSPA)
+	g.GET("/lines/deploy/cloudflare", a.panelSPA)
+	g.GET("/lines/deploy/reality", a.panelSPA)
+	g.GET("/diagnostics", a.panelSPA)
 	g.GET("/inbounds", a.panelSPA)
 	g.GET("/clients", a.panelSPA)
 	g.GET("/groups", a.panelSPA)

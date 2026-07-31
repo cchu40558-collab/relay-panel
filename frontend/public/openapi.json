@@ -2861,6 +2861,10 @@
       "description": "Two authentication modes are supported. UI sessions use a cookie set by the login endpoint. Programmatic clients (bots, scripts, remote panels) authenticate with a Bearer token taken from Settings → Security → API Token. Both work for every endpoint under /panel/api/*."
     },
     {
+      "name": "Lines",
+      "description": "Simplified line deployment API used by the custom panel. It saves proxy chains, writes supported Xray line config, and can optionally apply generated Nginx config when enabled."
+    },
+    {
       "name": "Inbounds",
       "description": "Manage inbound configurations and their clients. All endpoints live under /panel/api/inbounds and require a logged-in session or Bearer token. Link-generating endpoints honour forwarded headers only when the request comes from a configured trusted proxy."
     },
@@ -3090,6 +3094,292 @@
                 "example": {
                   "success": true,
                   "obj": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/line-types": {
+      "get": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "List supported line templates: Cloudflare main line, Reality direct, and Trojan direct.",
+        "operationId": "get_panel_api_line_types",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": [
+                    {
+                      "type": "cloudflare_ws_tls",
+                      "name": "Cloudflare 主线路",
+                      "description": "Cloudflare 橙云 -> Nginx -> VLESS WS TLS -> 住宅出口"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/lines": {
+      "get": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "List saved line drafts in the table view.",
+        "operationId": "get_panel_api_lines",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                },
+                "example": {
+                  "success": true,
+                  "obj": [
+                    {
+                      "id": 1,
+                      "name": "Cloudflare 主线路",
+                      "type": "cloudflare_ws_tls",
+                      "status": "draft",
+                      "entryHost": "proxy.example.com",
+                      "entryPort": 8443
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "Create a line draft. This does not apply server configuration yet.",
+        "operationId": "post_panel_api_lines",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              },
+              "example": {
+                "type": "cloudflare_ws_tls",
+                "name": "Cloudflare 主线路",
+                "entryHost": "proxy.example.com",
+                "entryPort": 8443,
+                "outboundType": "socks5",
+                "outboundHost": "residential.example.com",
+                "outboundPort": 1080,
+                "outboundUsername": "user",
+                "outboundPassword": "secret",
+                "config": {
+                  "wsPath": "/ws"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/lines/{id}": {
+      "get": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "Get one saved line draft with its residential outbound and type-specific config.",
+        "operationId": "get_panel_api_lines_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Line id.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "Update a line draft. Empty outboundPassword keeps the previous password.",
+        "operationId": "post_panel_api_lines_id",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Line id.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/lines/{id}/apply": {
+      "post": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "Run the line apply pipeline. Cloudflare lines write Xray inbound/outbound config and optionally write/reload Nginx when nginxApply is enabled.",
+        "operationId": "post_panel_api_lines_id_apply",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Line id.",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/panel/api/lines/prepare": {
+      "post": {
+        "tags": [
+          "Lines"
+        ],
+        "summary": "Return default display values for a line type. Kept for UI helpers while the full deployment flow is being built.",
+        "operationId": "post_panel_api_lines_prepare",
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "msg": {
+                      "type": "string"
+                    },
+                    "obj": {}
+                  }
                 }
               }
             }

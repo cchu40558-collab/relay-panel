@@ -48,7 +48,7 @@ const railStyle = { '--sider-rail': `${RAIL_WIDTH}px` } as CSSProperties;
 
 let hoveredAcrossRemounts = false;
 
-type IconName = 'dashboard' | 'inbound' | 'team' | 'groups' | 'setting' | 'tool' | 'cluster' | 'hosts' | 'logout' | 'apidocs' | 'outbound' | 'routing';
+type IconName = 'dashboard' | 'inbound' | 'team' | 'groups' | 'setting' | 'tool' | 'cluster' | 'hosts' | 'logout' | 'apidocs' | 'outbound' | 'routing' | 'lines' | 'deploy' | 'diagnostics';
 
 const iconByName: Record<IconName, ComponentType> = {
   dashboard: DashboardOutlined,
@@ -63,6 +63,9 @@ const iconByName: Record<IconName, ComponentType> = {
   apidocs: ApiOutlined,
   outbound: ExportOutlined,
   routing: SwapOutlined,
+  lines: ImportOutlined,
+  deploy: CloudServerOutlined,
+  diagnostics: ToolOutlined,
 };
 
 function DonateButton({ ariaLabel }: { ariaLabel: string }) {
@@ -165,17 +168,10 @@ export default function AppSidebar() {
   const panelVersion = window.X_UI_CUR_VER || '';
 
   const tabs = useMemo<{ key: string; icon: IconName; title: string }[]>(() => [
-    { key: '/', icon: 'dashboard', title: t('menu.dashboard') },
-    { key: '/inbounds', icon: 'inbound', title: t('menu.inbounds') },
-    { key: '/clients', icon: 'team', title: t('menu.clients') },
-    { key: '/groups', icon: 'groups', title: t('menu.groups') },
-    { key: '/nodes', icon: 'cluster', title: t('menu.nodes') },
-    { key: '/hosts', icon: 'hosts', title: t('menu.hosts') },
-    { key: '/outbound', icon: 'outbound', title: t('menu.outbounds') },
-    { key: '/routing', icon: 'routing', title: t('menu.routing') },
-    { key: '/settings', icon: 'setting', title: t('menu.settings') },
-    { key: '/xray', icon: 'tool', title: t('menu.xray') },
-    { key: '/api-docs', icon: 'apidocs', title: t('menu.apiDocs') },
+    { key: '/lines', icon: 'lines', title: '线路列表' },
+    { key: '/lines/deploy', icon: 'deploy', title: '线路部署' },
+    { key: '/diagnostics', icon: 'diagnostics', title: '诊断日志' },
+    { key: '/settings', icon: 'setting', title: '系统设置' },
     { key: LOGOUT_KEY, icon: 'logout', title: t('logout') },
   ], [t]);
 
@@ -202,13 +198,18 @@ export default function AppSidebar() {
     { key: '/xray#dns', icon: <DatabaseOutlined />, label: 'DNS' },
     { key: '/xray#advanced', icon: <CodeOutlined />, label: t('pages.xray.advancedTemplate') },
   ], [t]);
-
   const settingsActive = pathname === '/settings';
   const xrayActive = pathname === '/xray';
+  const lineDeployActive = pathname.startsWith('/lines/deploy');
+  const lineListActive = pathname === '/lines' || (pathname.startsWith('/lines/') && !lineDeployActive);
   const selectedKey = settingsActive
     ? `/settings${hash || '#general'}`
     : xrayActive
       ? `/xray${hash || '#basic'}`
+      : lineDeployActive
+        ? '/lines/deploy'
+        : lineListActive
+          ? '/lines'
       : (pathname === '' ? '/' : pathname);
 
   const openSubmenu = settingsActive ? '/settings' : xrayActive ? '/xray' : null;

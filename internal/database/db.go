@@ -83,6 +83,10 @@ func allModels() []any {
 		&model.NodeClientIp{},
 		&model.ClientGlobalTraffic{},
 		&model.OutboundSubscription{},
+		&model.LineProfile{},
+		&model.LineOutbound{},
+		&model.LineApplyLog{},
+		&model.LineCheckResult{},
 	}
 }
 
