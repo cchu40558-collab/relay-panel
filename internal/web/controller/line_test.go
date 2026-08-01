@@ -123,7 +123,7 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 		"outboundHost":     "res2.example.net",
 		"outboundPort":     8080,
 		"outboundUsername": "bob",
-		"config":           map[string]string{"realitySni": "www.microsoft.com"},
+		"config":           map[string]string{"realitySni": "www.itunes.com"},
 	})
 	if !update.Success {
 		t.Fatalf("update not successful: %s", update.Msg)
@@ -135,7 +135,7 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 	if updated.Name != "reality-direct" || updated.Type != service.LineTypeReality || updated.Outbound == nil || updated.Outbound.Type != "http" {
 		t.Fatalf("updated detail = %+v", updated)
 	}
-	if updated.Config["realitySni"] != "www.microsoft.com" {
+	if updated.Config["realitySni"] != "www.itunes.com" {
 		t.Fatalf("updated config = %+v", updated.Config)
 	}
 	if updated.Plan == nil || updated.Plan.Nginx != "" || len(updated.Logs) < 2 {
@@ -143,73 +143,15 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 	}
 
 	applyReality := doHostReq(t, engine, http.MethodPost, "/panel/api/lines/1/apply", map[string]any{})
-	if !applyReality.Success {
-		t.Fatalf("apply reality not successful: %s", applyReality.Msg)
+	if applyReality.Success {
+		t.Fatalf("Reality apply with a fake residential proxy should fail its real connection check")
 	}
-	var appliedReality service.LineDetail
-	if err := json.Unmarshal(applyReality.Obj, &appliedReality); err != nil {
-		t.Fatalf("decode applied reality detail: %v", err)
+	var failedReality service.LineDetail
+	if err := json.Unmarshal(applyReality.Obj, &failedReality); err != nil {
+		t.Fatalf("decode failed reality detail: %v", err)
 	}
-	if appliedReality.Status != "pending_check" || appliedReality.InboundId == nil {
-		t.Fatalf("applied reality detail = %+v", appliedReality)
-	}
-	if appliedReality.Config["realityPrivateKey"] == "" || appliedReality.Config["realityPublicKey"] == "" || appliedReality.Config["clientId"] == "" {
-		t.Fatalf("applied reality config missing generated values: %+v", appliedReality.Config)
-	}
-	if err := database.GetDB().First(&inbound, *appliedReality.InboundId).Error; err != nil {
-		t.Fatalf("load applied reality inbound: %v", err)
-	}
-	if inbound.Protocol != model.VLESS || inbound.Listen != "0.0.0.0" || inbound.Port != 443 || inbound.Tag != "line-1-in" {
-		t.Fatalf("applied reality inbound = %+v", inbound)
-	}
-	var stream map[string]any
-	if err := json.Unmarshal([]byte(inbound.StreamSettings), &stream); err != nil {
-		t.Fatalf("decode reality stream: %v", err)
-	}
-	if stream["security"] != "reality" || stream["network"] != "tcp" {
-		t.Fatalf("reality stream = %+v", stream)
-	}
-	if err := database.GetDB().Where("key = ?", "xrayTemplateConfig").First(&template).Error; err != nil {
-		t.Fatalf("reload xray template after reality apply: %v", err)
-	}
-	assertXrayTemplateHasLineRoute(t, template.Value, "line-1-in", "line-1-out")
-
-	var managedClient model.ClientRecord
-	if err := database.GetDB().Where("email = ?", "line-1-user").First(&managedClient).Error; err != nil {
-		t.Fatalf("load managed line client: %v", err)
-	}
-	if managedClient.UUID != appliedReality.Config["clientId"] || managedClient.SubID != "line-1" || !managedClient.Enable {
-		t.Fatalf("managed line client = %+v, config=%+v", managedClient, appliedReality.Config)
-	}
-	var clientLink model.ClientInbound
-	if err := database.GetDB().Where("client_id = ? AND inbound_id = ?", managedClient.Id, *appliedReality.InboundId).First(&clientLink).Error; err != nil {
-		t.Fatalf("load managed line client link: %v", err)
-	}
-	if clientLink.FlowOverride != "xtls-rprx-vision" {
-		t.Fatalf("managed line client flow = %q", clientLink.FlowOverride)
-	}
-	xrayConfig, err := (&service.XrayService{}).GetXrayConfig()
-	if err != nil {
-		t.Fatalf("build runtime Xray config: %v", err)
-	}
-	runtimeConfig, err := json.Marshal(xrayConfig)
-	if err != nil {
-		t.Fatalf("marshal runtime Xray config: %v", err)
-	}
-	if !strings.Contains(string(runtimeConfig), appliedReality.Config["clientId"]) {
-		t.Fatalf("runtime Xray config lost line client %q: %s", appliedReality.Config["clientId"], runtimeConfig)
-	}
-
-	share := doHostReq(t, engine, http.MethodGet, "/panel/api/lines/1/share", nil)
-	if !share.Success {
-		t.Fatalf("share reality not successful: %s", share.Msg)
-	}
-	var shareResp service.LineShareResponse
-	if err := json.Unmarshal(share.Obj, &shareResp); err != nil {
-		t.Fatalf("decode reality share: %v", err)
-	}
-	if len(shareResp.Links) != 1 || !strings.Contains(shareResp.Links[0].URI, "security=reality") || !strings.Contains(shareResp.Links[0].URI, "pbk=") {
-		t.Fatalf("reality share = %+v", shareResp)
+	if failedReality.Status != "apply_failed" || !strings.Contains(failedReality.LastError, "Reality real connection check failed") {
+		t.Fatalf("failed Reality apply = %+v", failedReality)
 	}
 }
 

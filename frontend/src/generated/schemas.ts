@@ -2687,6 +2687,14 @@ export const SCHEMAS: Record<string, unknown> = {
         "example": "h2",
         "type": "string"
       },
+      "averageMs": {
+        "example": 184,
+        "type": "integer"
+      },
+      "bestMs": {
+        "example": 162,
+        "type": "integer"
+      },
       "certIssuer": {
         "example": "Google Trust Services",
         "type": "string"
@@ -2719,7 +2727,15 @@ export const SCHEMAS: Record<string, unknown> = {
         "example": "104.16.124.96",
         "type": "string"
       },
+      "jitterMs": {
+        "example": 57,
+        "type": "integer"
+      },
       "latencyMs": {
+        "example": 180,
+        "type": "integer"
+      },
+      "medianMs": {
         "example": 180,
         "type": "integer"
       },
@@ -2734,11 +2750,19 @@ export const SCHEMAS: Record<string, unknown> = {
       "reason": {
         "type": "string"
       },
+      "rounds": {
+        "example": 10,
+        "type": "integer"
+      },
       "serverNames": {
         "items": {
           "type": "string"
         },
         "type": "array"
+      },
+      "successes": {
+        "example": 10,
+        "type": "integer"
       },
       "target": {
         "example": "www.cloudflare.com:443",
@@ -2752,6 +2776,10 @@ export const SCHEMAS: Record<string, unknown> = {
         "example": "1.3",
         "type": "string"
       },
+      "worstMs": {
+        "example": 219,
+        "type": "integer"
+      },
       "x25519": {
         "example": true,
         "type": "boolean"
@@ -2759,6 +2787,8 @@ export const SCHEMAS: Record<string, unknown> = {
     },
     "required": [
       "alpn",
+      "averageMs",
+      "bestMs",
       "certIssuer",
       "certSubject",
       "certValid",
@@ -2767,14 +2797,19 @@ export const SCHEMAS: Record<string, unknown> = {
       "h2",
       "host",
       "ip",
+      "jitterMs",
       "latencyMs",
+      "medianMs",
       "notAfter",
       "port",
       "reason",
+      "rounds",
       "serverNames",
+      "successes",
       "target",
       "tls13",
       "tlsVersion",
+      "worstMs",
       "x25519"
     ],
     "type": "object"

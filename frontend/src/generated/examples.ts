@@ -629,6 +629,8 @@ export const EXAMPLES: Record<string, unknown> = {
   },
   "RealityScanResult": {
     "alpn": "h2",
+    "averageMs": 184,
+    "bestMs": 162,
     "certIssuer": "Google Trust Services",
     "certSubject": "cloudflare.com",
     "certValid": true,
@@ -637,16 +639,21 @@ export const EXAMPLES: Record<string, unknown> = {
     "h2": true,
     "host": "www.cloudflare.com",
     "ip": "104.16.124.96",
+    "jitterMs": 57,
     "latencyMs": 180,
+    "medianMs": 180,
     "notAfter": "2026-08-01T00:00:00Z",
     "port": 443,
     "reason": "",
+    "rounds": 10,
     "serverNames": [
       ""
     ],
+    "successes": 10,
     "target": "www.cloudflare.com:443",
     "tls13": true,
     "tlsVersion": "1.3",
+    "worstMs": 219,
     "x25519": true
   },
   "Setting": {

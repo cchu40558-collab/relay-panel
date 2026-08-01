@@ -3,8 +3,40 @@ package service
 import (
 	"crypto/tls"
 	"net"
+	"slices"
 	"testing"
 )
+
+func TestDefaultRealityCandidatePoolHasOneHundredUniqueTargets(t *testing.T) {
+	if got := len(defaultRealityScanCandidates); got != 100 {
+		t.Fatalf("default Reality candidate count = %d, want 100", got)
+	}
+	seen := make(map[string]bool, len(defaultRealityScanCandidates))
+	for _, target := range defaultRealityScanCandidates {
+		if seen[target] {
+			t.Fatalf("duplicate default Reality candidate %q", target)
+		}
+		seen[target] = true
+	}
+	if slices.Contains(defaultRealityScanCandidates, "www.microsoft.com:443") {
+		t.Fatal("known-bad Microsoft default must not be in the automatic candidate pool")
+	}
+}
+
+func TestSortRealityResultsPrefersStableCandidates(t *testing.T) {
+	results := []*RealityScanResult{
+		{Target: "fast-but-flaky.example:443", Feasible: true, Successes: 8, MedianMs: 30, AverageMs: 35, JitterMs: 12},
+		{Target: "stable.example:443", Feasible: true, Successes: 10, MedianMs: 90, AverageMs: 95, JitterMs: 8},
+		{Target: "infeasible.example:443", Feasible: false, Successes: 10, MedianMs: 10},
+	}
+	sortRealityResults(results)
+	if got := results[0].Target; got != "stable.example:443" {
+		t.Fatalf("first target = %q, want stable candidate", got)
+	}
+	if got := results[1].Target; got != "fast-but-flaky.example:443" {
+		t.Fatalf("second target = %q, want lower-success candidate", got)
+	}
+}
 
 func TestTLSVersionName(t *testing.T) {
 	cases := map[uint16]string{

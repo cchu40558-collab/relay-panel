@@ -22,19 +22,118 @@ const (
 	realityScanConcurrency = 32
 	realityDiscoverMaxIPs  = 256
 	realityScanMaxTotal    = 512
+
+	// The default pool is intentionally tested more than once. A target that
+	// happens to complete one ordinary TLS handshake is not a stable REALITY
+	// target; the old deployment script used the same ten-round policy.
+	realityStabilityRounds       = 10
+	realityStabilityTimeout      = 3 * time.Second
+	realityStabilityMinSuccesses = 8
+	realityStabilityMaxMedianMs  = 1500
+	realityStabilityConcurrency  = 16
 )
 
 var defaultRealityScanCandidates = []string{
 	"www.cloudflare.com:443",
-	"www.microsoft.com:443",
+	"developers.cloudflare.com:443",
+	"cdnjs.cloudflare.com:443",
+	"blog.cloudflare.com:443",
+	"dash.cloudflare.com:443",
+	"www.cloudflarestatus.com:443",
+	"one.one.one.one:443",
+	"cloudflare-dns.com:443",
+	"pages.dev:443",
+	"workers.dev:443",
+	"www.apple.com:443",
+	"support.apple.com:443",
+	"developer.apple.com:443",
+	"www.itunes.com:443",
+	"www.icloud.com:443",
+	"music.apple.com:443",
+	"tv.apple.com:443",
+	"apps.apple.com:443",
+	"beta.apple.com:443",
+	"appleid.apple.com:443",
 	"www.amazon.com:443",
 	"aws.amazon.com:443",
+	"docs.aws.amazon.com:443",
+	"www.amazon.co.uk:443",
+	"www.amazon.de:443",
+	"www.amazon.co.jp:443",
+	"www.amazon.ca:443",
+	"m.media-amazon.com:443",
+	"images-na.ssl-images-amazon.com:443",
+	"www.google.com:443",
+	"www.gstatic.com:443",
+	"fonts.gstatic.com:443",
+	"www.youtube.com:443",
+	"www.android.com:443",
+	"dl.google.com:443",
+	"accounts.google.com:443",
+	"maps.google.com:443",
+	"play.google.com:443",
+	"www.googleapis.com:443",
+	"github.com:443",
+	"docs.github.com:443",
+	"assets.github.com:443",
+	"api.github.com:443",
+	"github.githubassets.com:443",
+	"raw.githubusercontent.com:443",
 	"www.samsung.com:443",
 	"www.nvidia.com:443",
-	"www.amd.com:443",
 	"www.intel.com:443",
+	"www.amd.com:443",
 	"www.sony.com:443",
-	"dl.google.com:443",
+	"www.lg.com:443",
+	"www.lenovo.com:443",
+	"www.dell.com:443",
+	"www.hp.com:443",
+	"www.asus.com:443",
+	"www.paypal.com:443",
+	"www.linkedin.com:443",
+	"www.dropbox.com:443",
+	"www.spotify.com:443",
+	"www.netflix.com:443",
+	"www.salesforce.com:443",
+	"www.ibm.com:443",
+	"www.oracle.com:443",
+	"www.mozilla.org:443",
+	"www.wikipedia.org:443",
+	"www.reddit.com:443",
+	"www.twitch.tv:443",
+	"www.shopify.com:443",
+	"www.ebay.com:443",
+	"slack.com:443",
+	"discord.com:443",
+	"zoom.us:443",
+	"www.notion.so:443",
+	"www.canva.com:443",
+	"wordpress.com:443",
+	"www.fastly.com:443",
+	"www.akamai.com:443",
+	"www.digitalocean.com:443",
+	"www.heroku.com:443",
+	"www.vercel.com:443",
+	"www.netlify.com:443",
+	"www.figma.com:443",
+	"www.atlassian.com:443",
+	"about.gitlab.com:443",
+	"bitbucket.org:443",
+	"www.facebook.com:443",
+	"www.instagram.com:443",
+	"www.whatsapp.com:443",
+	"www.tiktok.com:443",
+	"www.pinterest.com:443",
+	"www.imdb.com:443",
+	"www.bbc.com:443",
+	"www.nytimes.com:443",
+	"www.cnn.com:443",
+	"weather.com:443",
+	"www.booking.com:443",
+	"www.airbnb.com:443",
+	"www.uber.com:443",
+	"soundcloud.com:443",
+	"www.roblox.com:443",
 }
 
 type RealityScanResult struct {
@@ -55,6 +154,13 @@ type RealityScanResult struct {
 	NotAfter    string   `json:"notAfter" example:"2026-08-01T00:00:00Z"`
 	ServerNames []string `json:"serverNames"`
 	LatencyMs   int      `json:"latencyMs" example:"180"`
+	Rounds      int      `json:"rounds" example:"10"`
+	Successes   int      `json:"successes" example:"10"`
+	MedianMs    int      `json:"medianMs" example:"180"`
+	AverageMs   int      `json:"averageMs" example:"184"`
+	BestMs      int      `json:"bestMs" example:"162"`
+	WorstMs     int      `json:"worstMs" example:"219"`
+	JitterMs    int      `json:"jitterMs" example:"57"`
 	Reason      string   `json:"reason" example:""`
 }
 
@@ -292,7 +398,9 @@ func (s *ServerService) ScanRealityTarget(target string, xver int) (*RealityScan
 	if err != nil {
 		return nil, err
 	}
-	return s.probeRealityTarget(host, port, xver), nil
+	result := s.probeRealityTarget(host, port, xver)
+	setSingleRealityMeasurement(result)
+	return result, nil
 }
 
 func (s *ServerService) ScanRealityTargets(targetsCSV string) ([]*RealityScanResult, error) {
@@ -302,7 +410,8 @@ func (s *ServerService) ScanRealityTargets(targetsCSV string) ([]*RealityScanRes
 			tokens = append(tokens, t)
 		}
 	}
-	if len(tokens) == 0 {
+	usingDefaultPool := len(tokens) == 0
+	if usingDefaultPool {
 		tokens = append(tokens, defaultRealityScanCandidates...)
 	}
 
@@ -339,7 +448,11 @@ func (s *ServerService) ScanRealityTargets(targetsCSV string) ([]*RealityScanRes
 	}
 
 	probed := make([]*RealityScanResult, len(tasks))
-	sem := make(chan struct{}, realityScanConcurrency)
+	concurrency := realityScanConcurrency
+	if usingDefaultPool {
+		concurrency = realityStabilityConcurrency
+	}
+	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	for i, task := range tasks {
 		wg.Add(1)
@@ -347,7 +460,13 @@ func (s *ServerService) ScanRealityTargets(targetsCSV string) ([]*RealityScanRes
 		go func(idx int, tk realityProbeTask) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := s.probeRealityAddr(tk.dialHost, tk.port, tk.sni, tk.timeout, 0)
+			var r *RealityScanResult
+			if usingDefaultPool && tk.sni != "" {
+				r = s.probeRealityTargetStability(tk.dialHost, tk.port, tk.sni)
+			} else {
+				r = s.probeRealityAddr(tk.dialHost, tk.port, tk.sni, tk.timeout, 0)
+				setSingleRealityMeasurement(r)
+			}
 			if tk.bulk && r.TLSVersion == "" {
 				return
 			}
@@ -359,6 +478,95 @@ func (s *ServerService) ScanRealityTargets(targetsCSV string) ([]*RealityScanRes
 	results := dedupRealityResults(append(probed, invalid...))
 	sortRealityResults(results)
 	return results, nil
+}
+
+func (s *ServerService) probeRealityTargetStability(dialHost string, port int, sni string) *RealityScanResult {
+	var best *RealityScanResult
+	latencies := make([]int, 0, realityStabilityRounds)
+	failures := make(map[string]int)
+
+	for range realityStabilityRounds {
+		result := s.probeRealityAddr(dialHost, port, sni, realityStabilityTimeout, 0)
+		if result.Feasible {
+			latencies = append(latencies, result.LatencyMs)
+			if best == nil || result.LatencyMs < best.LatencyMs {
+				best = result
+			}
+			continue
+		}
+		if result.Reason != "" {
+			failures[result.Reason]++
+		}
+		if best == nil {
+			best = result
+		}
+	}
+	if best == nil {
+		best = &RealityScanResult{Target: net.JoinHostPort(sni, strconv.Itoa(port)), Host: sni, Port: port}
+	}
+
+	best.Rounds = realityStabilityRounds
+	best.Successes = len(latencies)
+	if len(latencies) > 0 {
+		slices.Sort(latencies)
+		best.BestMs = latencies[0]
+		best.WorstMs = latencies[len(latencies)-1]
+		best.JitterMs = best.WorstMs - best.BestMs
+		best.MedianMs = medianLatency(latencies)
+		best.AverageMs = averageLatency(latencies)
+		best.LatencyMs = best.MedianMs
+	}
+	best.Feasible = best.Successes >= realityStabilityMinSuccesses && best.MedianMs > 0 && best.MedianMs <= realityStabilityMaxMedianMs
+	if best.Feasible {
+		best.Reason = ""
+	} else if best.Successes < realityStabilityMinSuccesses {
+		best.Reason = fmt.Sprintf("stable TLS requirements not met: %d/%d feasible probes", best.Successes, best.Rounds)
+	} else if best.MedianMs > realityStabilityMaxMedianMs {
+		best.Reason = fmt.Sprintf("median latency %dms exceeds %dms", best.MedianMs, realityStabilityMaxMedianMs)
+	} else {
+		best.Reason = mostCommonRealityFailure(failures)
+	}
+	return best
+}
+
+func setSingleRealityMeasurement(result *RealityScanResult) {
+	if result == nil {
+		return
+	}
+	result.Rounds = 1
+	if result.Feasible {
+		result.Successes = 1
+		result.MedianMs = result.LatencyMs
+		result.AverageMs = result.LatencyMs
+		result.BestMs = result.LatencyMs
+		result.WorstMs = result.LatencyMs
+	}
+}
+
+func medianLatency(latencies []int) int {
+	if len(latencies)%2 == 1 {
+		return latencies[len(latencies)/2]
+	}
+	return (latencies[len(latencies)/2-1] + latencies[len(latencies)/2]) / 2
+}
+
+func averageLatency(latencies []int) int {
+	total := 0
+	for _, latency := range latencies {
+		total += latency
+	}
+	return total / len(latencies)
+}
+
+func mostCommonRealityFailure(failures map[string]int) string {
+	message := "no feasible TLS probes"
+	count := 0
+	for reason, n := range failures {
+		if n > count || (n == count && reason < message) {
+			message, count = reason, n
+		}
+	}
+	return message
 }
 
 func dedupRealityResults(results []*RealityScanResult) []*RealityScanResult {
@@ -386,6 +594,12 @@ func betterRealityResult(a, b *RealityScanResult) bool {
 	if a.Feasible != b.Feasible {
 		return a.Feasible
 	}
+	if a.Successes != b.Successes {
+		return a.Successes > b.Successes
+	}
+	if a.MedianMs != b.MedianMs {
+		return a.MedianMs > 0 && (b.MedianMs == 0 || a.MedianMs < b.MedianMs)
+	}
 	return a.LatencyMs > 0 && (b.LatencyMs == 0 || a.LatencyMs < b.LatencyMs)
 }
 
@@ -397,7 +611,19 @@ func sortRealityResults(results []*RealityScanResult) {
 			}
 			return 1
 		}
-		return a.LatencyMs - b.LatencyMs
+		if a.Successes != b.Successes {
+			return b.Successes - a.Successes
+		}
+		if a.MedianMs != b.MedianMs {
+			return a.MedianMs - b.MedianMs
+		}
+		if a.AverageMs != b.AverageMs {
+			return a.AverageMs - b.AverageMs
+		}
+		if a.JitterMs != b.JitterMs {
+			return a.JitterMs - b.JitterMs
+		}
+		return strings.Compare(a.Target, b.Target)
 	})
 }
 

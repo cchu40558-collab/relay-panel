@@ -110,7 +110,20 @@ export default function RealityTargetScannerModal({
       dataIndex: 'latencyMs',
       key: 'latencyMs',
       width: 85,
-      render: (v: number) => (v > 0 ? `${v} ms` : '—'),
+      render: (v: number) => (v > 0 ? `${v} ms` : '-'),
+    },
+    {
+      title: 'Stable',
+      key: 'stability',
+      width: 86,
+      render: (_, row) => (row.rounds > 1 ? `${row.successes}/${row.rounds}` : '-'),
+    },
+    {
+      title: 'Median',
+      dataIndex: 'medianMs',
+      key: 'medianMs',
+      width: 90,
+      render: (v: number, row) => (row.rounds > 1 && v > 0 ? `${v} ms` : '-'),
     },
     {
       title: '',
@@ -144,7 +157,7 @@ export default function RealityTargetScannerModal({
         </Button>,
       ]}
       title={t('pages.inbounds.form.scanModalTitle')}
-      width={960}
+      width={1120}
     >
       <Space orientation="vertical" size="small" style={{ width: '100%' }}>
         <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>

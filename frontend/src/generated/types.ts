@@ -3,6 +3,7 @@ export type OnlineAPISupport = number;
 export type ProcessState = string;
 export type Protocol = string;
 export type SubLinkProvider = unknown;
+export type nginxExecutor = unknown;
 export type staticEgressResolver = string;
 export type transportBits = number;
 
@@ -612,6 +613,8 @@ export interface ProbeResultUI {
 
 export interface RealityScanResult {
   alpn: string;
+  averageMs: number;
+  bestMs: number;
   certIssuer: string;
   certSubject: string;
   certValid: boolean;
@@ -620,14 +623,19 @@ export interface RealityScanResult {
   h2: boolean;
   host: string;
   ip: string;
+  jitterMs: number;
   latencyMs: number;
+  medianMs: number;
   notAfter: string;
   port: number;
   reason: string;
+  rounds: number;
   serverNames: string[];
+  successes: number;
   target: string;
   tls13: boolean;
   tlsVersion: string;
+  worstMs: number;
   x25519: boolean;
 }
 

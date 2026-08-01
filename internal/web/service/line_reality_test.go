@@ -4,6 +4,12 @@ import "testing"
 
 func TestRealityDefaultMinimumClientVersion(t *testing.T) {
 	config := ensureLineConfigDefaults(8, LineTypeReality, map[string]string{})
+	if got := config["realitySni"]; got != "auto" {
+		t.Fatalf("default Reality SNI = %q, want auto", got)
+	}
+	if got := config["realityDest"]; got != "auto" {
+		t.Fatalf("default Reality destination = %q, want auto", got)
+	}
 	if got := config["realityMinClientVer"]; got != defaultRealityMinClientVersion {
 		t.Fatalf("default min client version = %q, want %q", got, defaultRealityMinClientVersion)
 	}
@@ -14,6 +20,16 @@ func TestRealityDefaultMinimumClientVersion(t *testing.T) {
 	}
 	if got := config["realityMinClientVer"]; got != defaultRealityMinClientVersion {
 		t.Fatalf("apply min client version = %q, want %q", got, defaultRealityMinClientVersion)
+	}
+}
+
+func TestRealityExplicitTargetIsNotChangedToAuto(t *testing.T) {
+	config := ensureLineConfigDefaults(8, LineTypeReality, map[string]string{
+		"realitySni":  "www.itunes.com",
+		"realityDest": "www.itunes.com:443",
+	})
+	if isRealityAutoTarget(config) {
+		t.Fatal("explicit Reality target was treated as automatic")
 	}
 }
 

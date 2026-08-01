@@ -12,6 +12,9 @@ export type Protocol = z.infer<typeof ProtocolSchema>;
 export const SubLinkProviderSchema = z.unknown();
 export type SubLinkProvider = z.infer<typeof SubLinkProviderSchema>;
 
+export const nginxExecutorSchema = z.unknown();
+export type nginxExecutor = z.infer<typeof nginxExecutorSchema>;
+
 export const staticEgressResolverSchema = z.string();
 export type staticEgressResolver = z.infer<typeof staticEgressResolverSchema>;
 
@@ -648,6 +651,8 @@ export type ProbeResultUI = z.infer<typeof ProbeResultUISchema>;
 
 export const RealityScanResultSchema = z.object({
   alpn: z.string(),
+  averageMs: z.number().int(),
+  bestMs: z.number().int(),
   certIssuer: z.string(),
   certSubject: z.string(),
   certValid: z.boolean(),
@@ -656,14 +661,19 @@ export const RealityScanResultSchema = z.object({
   h2: z.boolean(),
   host: z.string(),
   ip: z.string(),
+  jitterMs: z.number().int(),
   latencyMs: z.number().int(),
+  medianMs: z.number().int(),
   notAfter: z.string(),
   port: z.number().int(),
   reason: z.string(),
+  rounds: z.number().int(),
   serverNames: z.array(z.string()),
+  successes: z.number().int(),
   target: z.string(),
   tls13: z.boolean(),
   tlsVersion: z.string(),
+  worstMs: z.number().int(),
   x25519: z.boolean(),
 });
 export type RealityScanResult = z.infer<typeof RealityScanResultSchema>;

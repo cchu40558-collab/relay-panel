@@ -419,7 +419,6 @@ func (s *LineService) UpdateLine(id int, req LineSaveRequest) (*LineDetail, erro
 		if err != nil {
 			return err
 		}
-
 		outbound.Type = normalized.OutboundType
 		outbound.Host = normalized.OutboundHost
 		outbound.Port = normalized.OutboundPort
@@ -447,13 +446,32 @@ func (s *LineService) UpdateLine(id int, req LineSaveRequest) (*LineDetail, erro
 }
 
 func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
+	var lineForPreflight model.LineProfile
+	if err := database.GetDB().Select("id", "type").First(&lineForPreflight, id).Error; err != nil {
+		return s.finishLineApplyError(id, err)
+	}
+	var realityPreflight *realityApplyPreflight
+	if lineForPreflight.Type == LineTypeReality {
+		var err error
+		realityPreflight, err = s.prepareRealityApply(id)
+		if err != nil {
+			return s.finishLineApplyError(id, err)
+		}
+	}
+
 	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		var line model.LineProfile
 		if err := tx.First(&line, id).Error; err != nil {
 			return err
 		}
+		if realityPreflight != nil && (line.ConfigJSON != realityPreflight.sourceConfigJSON || line.UpdatedAt != realityPreflight.sourceLineUpdatedAt) {
+			return newLineApplyFailure("validate", "Reality preflight is stale", "The line changed while the Reality connection check was running; save and apply again")
+		}
 
 		config := ensureLineConfigDefaults(line.Id, line.Type, decodeLineConfig(line.ConfigJSON))
+		if realityPreflight != nil {
+			config = cloneLineConfig(realityPreflight.config)
+		}
 		if line.Type == LineTypeCloudflare {
 			if err := promotePendingOriginCertificate(config); err != nil {
 				return wrapLineApplyFailure("validate", "Origin certificate validation failed", err)
@@ -475,6 +493,9 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 			}
 			return err
 		}
+		if realityPreflight != nil && outbound.UpdatedAt != realityPreflight.sourceOutboundUpdatedAt {
+			return newLineApplyFailure("validate", "Reality preflight is stale", "The residential outbound changed while the Reality connection check was running; save and apply again")
+		}
 
 		plan := buildLineApplyPlan(line, &outbound, config)
 		if err := createLineLog(tx, line.Id, "apply", "info", "开始执行保存并应用", "执行器骨架已接收线路部署请求"); err != nil {
@@ -485,6 +506,11 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		}
 		if err := createLineLog(tx, line.Id, "validate", "info", "参数校验通过", strings.Join(plan.Summary, "\n")); err != nil {
 			return err
+		}
+		if realityPreflight != nil {
+			if err := createLineLog(tx, line.Id, "reality_preflight", "info", "Reality 真实连接预检通过", realityPreflight.detail); err != nil {
+				return err
+			}
 		}
 		if err := createLineLog(tx, line.Id, "xray", "info", "已生成 Xray 入站和出站草案", "下一阶段写入 3x-ui/Xray 配置并重启 Xray"); err != nil {
 			return err
@@ -521,16 +547,20 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		return newLineApplyFailure("executor", "Line type is not supported in MVP", fmt.Sprintf("line type %s is hidden until a later version", line.Type))
 	})
 	if err != nil {
-		if failErr := recordLineApplyFailure(id, err); failErr != nil {
-			return nil, fmt.Errorf("%w; record apply failure: %v", err, failErr)
-		}
-		detail, detailErr := s.GetLine(id)
-		if detailErr != nil {
-			return nil, err
-		}
-		return detail, err
+		return s.finishLineApplyError(id, err)
 	}
 	return s.GetLine(id)
+}
+
+func (s *LineService) finishLineApplyError(id int, err error) (*LineDetail, error) {
+	if failErr := recordLineApplyFailure(id, err); failErr != nil {
+		return nil, fmt.Errorf("%w; record apply failure: %v", err, failErr)
+	}
+	detail, detailErr := s.GetLine(id)
+	if detailErr != nil {
+		return nil, err
+	}
+	return detail, err
 }
 
 // DeleteLine removes only artifacts owned by a managed line: its tagged
@@ -2016,10 +2046,14 @@ func ensureLineConfigDefaults(lineID int, lineType string, config map[string]str
 	}
 	if lineType == LineTypeReality {
 		if strings.TrimSpace(config["realitySni"]) == "" {
-			config["realitySni"] = "www.microsoft.com"
+			config["realitySni"] = "auto"
 		}
 		if strings.TrimSpace(config["realityDest"]) == "" {
-			config["realityDest"] = strings.TrimSpace(config["realitySni"]) + ":443"
+			if strings.EqualFold(strings.TrimSpace(config["realitySni"]), "auto") {
+				config["realityDest"] = "auto"
+			} else {
+				config["realityDest"] = strings.TrimSpace(config["realitySni"]) + ":443"
+			}
 		}
 		if strings.TrimSpace(config["realityShortId"]) == "" {
 			config["realityShortId"] = randomHexString(8, fmt.Sprintf("%08x", lineID))
@@ -2092,10 +2126,10 @@ func ensureRealityConfig(config map[string]string) error {
 		config["clientId"] = uuid.NewString()
 	}
 	sni := strings.TrimSpace(config["realitySni"])
-	if sni == "" {
-		return fmt.Errorf("reality sni is required")
-	}
-	if strings.TrimSpace(config["realityDest"]) == "" {
+	if sni == "" || strings.EqualFold(sni, "auto") {
+		config["realitySni"] = "auto"
+		config["realityDest"] = "auto"
+	} else if strings.TrimSpace(config["realityDest"]) == "" {
 		config["realityDest"] = sni + ":443"
 	}
 	if strings.TrimSpace(config["realityShortId"]) == "" {
