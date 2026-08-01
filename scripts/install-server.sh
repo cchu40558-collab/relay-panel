@@ -178,7 +178,7 @@ build_panel() {
 }
 
 backup_existing_install() {
-  is_upgrade || return
+  is_upgrade || return 0
   [[ -x "${INSTALL_ROOT}/${APP_NAME}" ]] || die "Upgrade requires an existing ${INSTALL_ROOT}/${APP_NAME}"
   [[ -f "$ENV_FILE" ]] || die "Upgrade requires an existing $ENV_FILE"
 
@@ -247,7 +247,7 @@ EOF
 }
 
 install_xray() {
-  [[ "${PANEL_INSTALL_XRAY}" == "true" ]] || return
+  [[ "${PANEL_INSTALL_XRAY}" == "true" ]] || return 0
   if [[ -x "${BIN_DIR}/xray-linux-$(detect_arch)" || -x "${BIN_DIR}/xray" ]]; then
     log "Xray binary already exists"
     return
