@@ -165,7 +165,21 @@ func (s *LineService) GetLine(id int) (*LineDetail, error) {
 		return nil, err
 	}
 
+	detail.Config = browserLineConfig(detail.Config)
 	return detail, nil
+}
+
+// browserLineConfig returns the subset of a line configuration that may leave
+// the server. Reality private keys stay in the database for Xray only.
+func browserLineConfig(config map[string]string) map[string]string {
+	visible := make(map[string]string, len(config))
+	for key, value := range config {
+		if key == "realityPrivateKey" {
+			continue
+		}
+		visible[key] = value
+	}
+	return visible
 }
 
 // StageCloudflareOriginCertificate validates an uploaded origin certificate pair and

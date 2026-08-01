@@ -13,7 +13,7 @@ type LineProfile struct {
 	EntryHost   string `json:"entryHost"`
 	EntryPort   int    `json:"entryPort"`
 	ChainText   string `json:"chainText"`
-	ConfigJSON  string `json:"configJson"`
+	ConfigJSON  string `json:"-"` // Internal configuration can include a Reality private key.
 	LastCheckAt int64  `json:"lastCheckAt" gorm:"default:0"`
 	LastError   string `json:"lastError"`
 	CreatedAt   int64  `json:"createdAt" gorm:"autoCreateTime"`

@@ -123,7 +123,10 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 		"outboundHost":     "res2.example.net",
 		"outboundPort":     8080,
 		"outboundUsername": "bob",
-		"config":           map[string]string{"realitySni": "www.itunes.com"},
+		"config": map[string]string{
+			"realitySni":        "www.itunes.com",
+			"realityPrivateKey": "test-private-key",
+		},
 	})
 	if !update.Success {
 		t.Fatalf("update not successful: %s", update.Msg)
@@ -152,6 +155,16 @@ func TestLineController_CreateListGetUpdate(t *testing.T) {
 	}
 	if failedReality.Status != "apply_failed" || !strings.Contains(failedReality.LastError, "Reality real connection check failed") {
 		t.Fatalf("failed Reality apply = %+v", failedReality)
+	}
+	var persistedReality model.LineProfile
+	if err := database.GetDB().First(&persistedReality, 1).Error; err != nil {
+		t.Fatalf("load Reality line: %v", err)
+	}
+	if !strings.Contains(persistedReality.ConfigJSON, "realityPrivateKey") {
+		t.Fatalf("Reality private key was not persisted for Xray")
+	}
+	if failedReality.Config["realityPrivateKey"] != "" || strings.Contains(string(applyReality.Obj), "realityPrivateKey") || strings.Contains(string(applyReality.Obj), "configJson") {
+		t.Fatalf("Reality private configuration leaked in response: %s", applyReality.Obj)
 	}
 }
 

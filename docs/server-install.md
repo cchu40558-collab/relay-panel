@@ -30,16 +30,17 @@ scripts/install-server.sh
 
 ## 服务器执行方式
 
-代码上传到 Git 后，在服务器执行：
+每个正式版本都会有一个 Git tag，例如 `v2.0.9`。首次安装必须指定这个版本：
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
+VERSION=v2.0.9
+PANEL_REPO_REF="$VERSION" bash <(curl -fsSL "https://raw.githubusercontent.com/cchu40558-collab/relay-panel/${VERSION}/scripts/install-server.sh")
 ```
 
-如果要指定分支：
+升级时也必须明确写出目标版本：
 
 ```bash
-PANEL_REPO_REF=main bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
+relay-panel update v2.1.0
 ```
 
 安装完成后查看账号和地址：
@@ -76,7 +77,8 @@ PANEL_INSTALL_XRAY=true
 例子：
 
 ```bash
-PANEL_PORT=2053 PANEL_WEB_BASE_PATH=/panel bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
+VERSION=v2.0.9
+PANEL_PORT=2053 PANEL_WEB_BASE_PATH=/panel PANEL_REPO_REF="$VERSION" bash <(curl -fsSL "https://raw.githubusercontent.com/cchu40558-collab/relay-panel/${VERSION}/scripts/install-server.sh")
 ```
 
 ## 现在能做到什么
@@ -94,9 +96,14 @@ PANEL_PORT=2053 PANEL_WEB_BASE_PATH=/panel bash <(curl -fsSL https://raw.githubu
 ## 还没完成
 
 - Trojan 直连真实执行器，后续版本支持。
-- 检测按钮。
-- 分享链接和二维码。
 - Cloudflare API 自动改 DNS。
 - 防火墙自动开放端口。
 
-所以这版叫“服务器安装框架”，还不是最终正式版。
+## 版本与回退
+
+- `relay-panel update` 不带版本号时不会升级。
+- `relay-panel update vX.Y.Z` 只会下载对应的正式版本。
+- 每次升级前会备份程序、服务配置和面板数据。
+- 升级失败会自动恢复刚才的版本。
+- 成功后只保留最近两个旧版本备份；加上当前运行版本，服务器最多保留三个版本。
+- `relay-panel rollback` 会恢复最近一个旧版本，并先备份当前版本。

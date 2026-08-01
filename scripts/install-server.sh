@@ -7,7 +7,7 @@ set -Eeuo pipefail
 #
 # Important env vars:
 #   PANEL_REPO_URL       Git repository to install from. Default: Relay Panel repository.
-#   PANEL_REPO_REF       Branch, tag, or commit. Default: main
+#   PANEL_REPO_REF       Required immutable release tag, for example: v2.10.1
 #   PANEL_UPGRADE        Set to true to preserve the installed panel settings and data.
 #   PANEL_PORT           Web panel port. Default: 2053
 #   PANEL_WEB_BASE_PATH  Web base path. Default: random
@@ -29,12 +29,16 @@ SERVICE_FILE="${SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
 VERSION_FILE="${VERSION_FILE:-${INSTALL_ROOT}/VERSION}"
 COMMAND_PATH="${COMMAND_PATH:-/usr/local/bin/relay-panel}"
 PANEL_REPO_URL="${PANEL_REPO_URL:-https://github.com/cchu40558-collab/relay-panel.git}"
-PANEL_REPO_REF="${PANEL_REPO_REF:-main}"
+PANEL_REPO_REF="${PANEL_REPO_REF:-}"
 PANEL_UPGRADE="${PANEL_UPGRADE:-false}"
 PANEL_PORT="${PANEL_PORT:-2053}"
 PANEL_INSTALL_NGINX="${PANEL_INSTALL_NGINX:-true}"
 PANEL_INSTALL_XRAY="${PANEL_INSTALL_XRAY:-true}"
 GO_VERSION="${GO_VERSION:-1.26.5}"
+BACKUP_ROOT="${BACKUP_ROOT:-/var/backups/${APP_NAME}}"
+BACKUP_KEEP="${BACKUP_KEEP:-2}"
+UPGRADE_BACKUP_DIR=""
+UPGRADE_COMPLETE=false
 
 need_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -54,6 +58,10 @@ die() {
 
 is_upgrade() {
   [[ "${PANEL_UPGRADE}" == "true" ]]
+}
+
+validate_release_ref() {
+  [[ "${PANEL_REPO_REF}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || die "PANEL_REPO_REF must be a release tag such as v2.10.1"
 }
 
 rand_text() {
@@ -186,13 +194,47 @@ backup_existing_install() {
   [[ -f "$ENV_FILE" ]] || die "Upgrade requires an existing $ENV_FILE"
 
   local backup_dir
-  backup_dir="/var/backups/${APP_NAME}/$(date +%Y%m%d-%H%M%S)"
+  backup_dir="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   log "Backing up current installation to ${backup_dir}"
   install -d -m 0700 "$backup_dir"
   cp -a "${INSTALL_ROOT}/${APP_NAME}" "$backup_dir/${APP_NAME}"
   cp -a "$ENV_FILE" "$backup_dir/environment"
   [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "$backup_dir/${SERVICE_NAME}.service"
   [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "$backup_dir/data"
+  [[ -f "$VERSION_FILE" ]] && cp -a "$VERSION_FILE" "$backup_dir/VERSION"
+  UPGRADE_BACKUP_DIR="$backup_dir"
+}
+
+restore_failed_upgrade() {
+  [[ -n "$UPGRADE_BACKUP_DIR" && -d "$UPGRADE_BACKUP_DIR" ]] || return 0
+
+  log "Upgrade failed; restoring ${UPGRADE_BACKUP_DIR}"
+  trap - ERR
+  set +e
+  systemctl stop "$SERVICE_NAME"
+  cp -a "$UPGRADE_BACKUP_DIR/${APP_NAME}" "${INSTALL_ROOT}/${APP_NAME}"
+  cp -a "$UPGRADE_BACKUP_DIR/environment" "$ENV_FILE"
+  [[ -f "$UPGRADE_BACKUP_DIR/${SERVICE_NAME}.service" ]] && cp -a "$UPGRADE_BACKUP_DIR/${SERVICE_NAME}.service" "$SERVICE_FILE"
+  [[ -f "$UPGRADE_BACKUP_DIR/VERSION" ]] && cp -a "$UPGRADE_BACKUP_DIR/VERSION" "$VERSION_FILE"
+  if [[ -d "$UPGRADE_BACKUP_DIR/data" ]]; then
+    rm -rf "$DATA_DIR"
+    cp -a "$UPGRADE_BACKUP_DIR/data" "$DATA_DIR"
+  fi
+  systemctl daemon-reload
+  systemctl start "$SERVICE_NAME"
+}
+
+prune_old_backups() {
+  is_upgrade || return 0
+  [[ "$BACKUP_KEEP" =~ ^[0-9]+$ ]] || die "BACKUP_KEEP must be a non-negative integer"
+  [[ -d "$BACKUP_ROOT" ]] || return 0
+
+  local backup_dirs=()
+  mapfile -t backup_dirs < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
+  local index
+  for ((index = BACKUP_KEEP; index < ${#backup_dirs[@]}; index++)); do
+    rm -rf "${BACKUP_ROOT}/${backup_dirs[$index]}"
+  done
 }
 
 write_env() {
@@ -299,6 +341,7 @@ EOF
   else
     systemctl start "$SERVICE_NAME"
   fi
+  systemctl is-active --quiet "$SERVICE_NAME"
 }
 
 write_command_wrapper() {
@@ -310,7 +353,12 @@ set -Eeuo pipefail
 SERVICE_NAME="line-panel"
 INSTALL_ROOT="/usr/local/line-panel"
 VERSION_FILE="${INSTALL_ROOT}/VERSION"
-INSTALLER_URL="https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh"
+DATA_DIR="/etc/line-panel"
+ENV_FILE="/etc/default/line-panel"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+BACKUP_ROOT="/var/backups/line-panel"
+APP_NAME="line-panel"
+REPO_URL="https://github.com/cchu40558-collab/relay-panel.git"
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
@@ -325,6 +373,58 @@ print_version() {
   else
     echo "Relay Panel version unknown (missing $VERSION_FILE)"
   fi
+}
+
+validate_release_tag() {
+  [[ "${1:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]] || {
+    echo "Usage: relay-panel update vX.Y.Z" >&2
+    exit 1
+  }
+}
+
+latest_backup() {
+  [[ -d "$BACKUP_ROOT" ]] || return 1
+  find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | sort -r | head -n 1
+}
+
+backup_current_install() {
+  local backup_dir="$1"
+  install -d -m 0700 "$backup_dir"
+  cp -a "${INSTALL_ROOT}/${APP_NAME}" "$backup_dir/${APP_NAME}"
+  cp -a "$ENV_FILE" "$backup_dir/environment"
+  [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "$backup_dir/${SERVICE_NAME}.service"
+  [[ -f "$VERSION_FILE" ]] && cp -a "$VERSION_FILE" "$backup_dir/VERSION"
+  [[ -d "$DATA_DIR" ]] && cp -a "$DATA_DIR" "$backup_dir/data"
+}
+
+restore_backup() {
+  local backup_dir="$1"
+  [[ -x "$backup_dir/${APP_NAME}" && -f "$backup_dir/environment" ]] || {
+    echo "Backup is incomplete: $backup_dir" >&2
+    return 1
+  }
+
+  systemctl stop "$SERVICE_NAME"
+  cp -a "$backup_dir/${APP_NAME}" "${INSTALL_ROOT}/${APP_NAME}"
+  cp -a "$backup_dir/environment" "$ENV_FILE"
+  [[ -f "$backup_dir/${SERVICE_NAME}.service" ]] && cp -a "$backup_dir/${SERVICE_NAME}.service" "$SERVICE_FILE"
+  [[ -f "$backup_dir/VERSION" ]] && cp -a "$backup_dir/VERSION" "$VERSION_FILE"
+  if [[ -d "$backup_dir/data" ]]; then
+    rm -rf "$DATA_DIR"
+    cp -a "$backup_dir/data" "$DATA_DIR"
+  fi
+  systemctl daemon-reload
+  systemctl start "$SERVICE_NAME"
+  systemctl is-active --quiet "$SERVICE_NAME"
+}
+
+prune_old_backups() {
+  local backup_dirs=()
+  mapfile -t backup_dirs < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort -r)
+  local index
+  for ((index = 2; index < ${#backup_dirs[@]}; index++)); do
+    rm -rf "${BACKUP_ROOT}/${backup_dirs[$index]}"
+  done
 }
 
 case "${1:-help}" in
@@ -351,7 +451,33 @@ case "${1:-help}" in
     ;;
   update)
     require_root
-    PANEL_UPGRADE=true bash <(curl -fsSL "$INSTALLER_URL")
+    target="${2:-}"
+    if [[ -z "$target" ]]; then
+      print_version
+      echo "Specify a release version, for example: relay-panel update v2.10.1"
+      exit 0
+    fi
+    validate_release_tag "$target"
+    git ls-remote --exit-code --refs "$REPO_URL" "refs/tags/${target}" >/dev/null
+    installer_url="https://raw.githubusercontent.com/cchu40558-collab/relay-panel/${target}/scripts/install-server.sh"
+    PANEL_UPGRADE=true PANEL_REPO_REF="$target" bash <(curl -fsSL "$installer_url")
+    ;;
+  rollback)
+    require_root
+    target="$(latest_backup)" || {
+      echo "No backup is available." >&2
+      exit 1
+    }
+    current_backup="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+    backup_current_install "$current_backup"
+    if ! restore_backup "$target"; then
+      restore_backup "$current_backup" || true
+      echo "Rollback failed; restored the version that was running before rollback." >&2
+      exit 1
+    fi
+    rm -rf "$target"
+    prune_old_backups
+    print_version
     ;;
   help|-h|--help)
     cat <<'USAGE'
@@ -363,7 +489,8 @@ Commands:
   logs     Show the latest 100 panel log lines
   check    Check panel, Nginx, and listening ports
   restart  Restart the panel service
-  update   Upgrade Relay Panel from GitHub
+  update <version>  Upgrade to an explicit release tag, for example v2.10.1
+  rollback  Restore the most recent previous-version backup
 USAGE
     ;;
   *)
@@ -387,6 +514,10 @@ print_result() {
 
 main() {
   need_root
+  validate_release_ref
+  if is_upgrade; then
+    trap 'status=$?; if [[ "$UPGRADE_COMPLETE" != true ]]; then restore_failed_upgrade; fi; exit "$status"' ERR
+  fi
   install_packages
   ensure_go
   ensure_node
@@ -398,6 +529,8 @@ main() {
   install_xray
   write_service
   write_command_wrapper
+  UPGRADE_COMPLETE=true
+  prune_old_backups
   print_result
 }
 
