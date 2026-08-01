@@ -3,10 +3,10 @@ set -Eeuo pipefail
 
 # Custom line-panel server installer.
 # Usage:
-#   PANEL_REPO_URL=https://github.com/you/line-panel.git bash scripts/install-server.sh
+#   bash scripts/install-server.sh
 #
 # Important env vars:
-#   PANEL_REPO_URL       Git repository to install from. Required on first install.
+#   PANEL_REPO_URL       Git repository to install from. Default: Relay Panel repository.
 #   PANEL_REPO_REF       Branch, tag, or commit. Default: main
 #   PANEL_UPGRADE        Set to true to preserve the installed panel settings and data.
 #   PANEL_PORT           Web panel port. Default: 2053
@@ -26,6 +26,7 @@ BIN_DIR="${BIN_DIR:-${INSTALL_ROOT}/bin}"
 ENV_FILE="${ENV_FILE:-/etc/default/line-panel}"
 RESULT_FILE="${RESULT_FILE:-${DATA_DIR}/install-result.env}"
 SERVICE_FILE="${SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
+PANEL_REPO_URL="${PANEL_REPO_URL:-https://github.com/cchu40558-collab/relay-panel.git}"
 PANEL_REPO_REF="${PANEL_REPO_REF:-main}"
 PANEL_UPGRADE="${PANEL_UPGRADE:-false}"
 PANEL_PORT="${PANEL_PORT:-2053}"

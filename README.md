@@ -9,7 +9,7 @@ This repository is an independent project. It does not publish Docker images, Wi
 Run as `root` on a supported Linux server:
 
 ```bash
-PANEL_REPO_URL=https://github.com/cchu40558-collab/relay-panel.git bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/v2.0.2/scripts/install-server.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
 ```
 
 After installation, the script prints the panel address and initial credentials. Keep the active SSH session open until a new login is confirmed.

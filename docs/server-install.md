@@ -33,15 +33,13 @@ scripts/install-server.sh
 代码上传到 Git 后，在服务器执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/你的账号/你的仓库/main/scripts/install-server.sh \
-  | PANEL_REPO_URL=https://github.com/你的账号/你的仓库.git bash
+bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
 ```
 
 如果要指定分支：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/你的账号/你的仓库/main/scripts/install-server.sh \
-  | PANEL_REPO_URL=https://github.com/你的账号/你的仓库.git PANEL_REPO_REF=main bash
+PANEL_REPO_REF=main bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
 ```
 
 安装完成后查看账号和地址：
@@ -78,11 +76,7 @@ PANEL_INSTALL_XRAY=true
 例子：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/你的账号/你的仓库/main/scripts/install-server.sh \
-  | PANEL_REPO_URL=https://github.com/你的账号/你的仓库.git \
-    PANEL_PORT=2053 \
-    PANEL_WEB_BASE_PATH=/panel \
-    bash
+PANEL_PORT=2053 PANEL_WEB_BASE_PATH=/panel bash <(curl -fsSL https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh)
 ```
 
 ## 现在能做到什么
