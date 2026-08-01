@@ -32,9 +32,10 @@ import (
 )
 
 const (
-	LineTypeCloudflare = "cloudflare_ws_tls"
-	LineTypeReality    = "reality_direct"
-	LineTypeTrojan     = "trojan_direct"
+	LineTypeCloudflare             = "cloudflare_ws_tls"
+	LineTypeReality                = "reality_direct"
+	LineTypeTrojan                 = "trojan_direct"
+	defaultRealityMinClientVersion = "1.8.0"
 )
 
 var managedNginxCertRoot = "/etc/line-panel/nginx-certs"
@@ -2032,6 +2033,9 @@ func ensureLineConfigDefaults(lineID int, lineType string, config map[string]str
 		if strings.TrimSpace(config["realitySpiderX"]) == "" {
 			config["realitySpiderX"] = "/"
 		}
+		if strings.TrimSpace(config["realityMinClientVer"]) == "" {
+			config["realityMinClientVer"] = defaultRealityMinClientVersion
+		}
 	}
 	return config
 }
@@ -2105,6 +2109,9 @@ func ensureRealityConfig(config map[string]string) error {
 	}
 	if strings.TrimSpace(config["realitySpiderX"]) == "" {
 		config["realitySpiderX"] = "/"
+	}
+	if strings.TrimSpace(config["realityMinClientVer"]) == "" {
+		config["realityMinClientVer"] = defaultRealityMinClientVersion
 	}
 	if strings.TrimSpace(config["realityPrivateKey"]) == "" || strings.TrimSpace(config["realityPublicKey"]) == "" {
 		privateKey, publicKey, err := generateX25519KeyPair()

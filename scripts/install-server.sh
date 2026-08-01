@@ -26,6 +26,8 @@ BIN_DIR="${BIN_DIR:-${INSTALL_ROOT}/bin}"
 ENV_FILE="${ENV_FILE:-/etc/default/line-panel}"
 RESULT_FILE="${RESULT_FILE:-${DATA_DIR}/install-result.env}"
 SERVICE_FILE="${SERVICE_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}"
+VERSION_FILE="${VERSION_FILE:-${INSTALL_ROOT}/VERSION}"
+COMMAND_PATH="${COMMAND_PATH:-/usr/local/bin/relay-panel}"
 PANEL_REPO_URL="${PANEL_REPO_URL:-https://github.com/cchu40558-collab/relay-panel.git}"
 PANEL_REPO_REF="${PANEL_REPO_REF:-main}"
 PANEL_UPGRADE="${PANEL_UPGRADE:-false}"
@@ -173,6 +175,7 @@ build_panel() {
   rm -f "$new_binary"
   go build -trimpath -ldflags="-s -w" -o "$new_binary" .
   install -m 0755 "$new_binary" "${INSTALL_ROOT}/${APP_NAME}"
+  install -m 0644 "${SOURCE_DIR}/internal/config/version" "$VERSION_FILE"
   rm -f "$new_binary"
   chmod 0755 "${INSTALL_ROOT}/${APP_NAME}"
 }
@@ -298,6 +301,80 @@ EOF
   fi
 }
 
+write_command_wrapper() {
+  log "Installing relay-panel command"
+  cat > "$COMMAND_PATH" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SERVICE_NAME="line-panel"
+INSTALL_ROOT="/usr/local/line-panel"
+VERSION_FILE="${INSTALL_ROOT}/VERSION"
+INSTALLER_URL="https://raw.githubusercontent.com/cchu40558-collab/relay-panel/main/scripts/install-server.sh"
+
+require_root() {
+  if [[ "${EUID}" -ne 0 ]]; then
+    echo "Please run this command as root." >&2
+    exit 1
+  fi
+}
+
+print_version() {
+  if [[ -r "$VERSION_FILE" ]]; then
+    printf 'Relay Panel v%s\n' "$(tr -d '[:space:]' < "$VERSION_FILE")"
+  else
+    echo "Relay Panel version unknown (missing $VERSION_FILE)"
+  fi
+}
+
+case "${1:-help}" in
+  version)
+    print_version
+    ;;
+  status)
+    print_version
+    systemctl status "$SERVICE_NAME" --no-pager
+    ;;
+  logs)
+    journalctl -u "$SERVICE_NAME" -n 100 --no-pager
+    ;;
+  check)
+    print_version
+    systemctl is-active "$SERVICE_NAME"
+    nginx -t
+    ss -lntp | grep -E ':(443|8443|2053|2096) '
+    ;;
+  restart)
+    require_root
+    systemctl restart "$SERVICE_NAME"
+    systemctl is-active "$SERVICE_NAME"
+    ;;
+  update)
+    require_root
+    PANEL_UPGRADE=true bash <(curl -fsSL "$INSTALLER_URL")
+    ;;
+  help|-h|--help)
+    cat <<'USAGE'
+Usage: relay-panel <command>
+
+Commands:
+  version  Show the deployed panel version
+  status   Show panel service status
+  logs     Show the latest 100 panel log lines
+  check    Check panel, Nginx, and listening ports
+  restart  Restart the panel service
+  update   Upgrade Relay Panel from GitHub
+USAGE
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    exit 1
+    ;;
+esac
+EOF
+  chmod 0755 "$COMMAND_PATH"
+}
+
 print_result() {
   log "Install complete"
   cat "$RESULT_FILE"
@@ -320,6 +397,7 @@ main() {
   write_env
   install_xray
   write_service
+  write_command_wrapper
   print_result
 }
 

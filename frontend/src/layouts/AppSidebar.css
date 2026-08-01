@@ -249,6 +249,12 @@
   font-size: 16px;
 }
 
+.sider-version-collapsed {
+  justify-content: center;
+  padding: 8px 4px;
+  font-size: 11px;
+}
+
 .sider-version:hover,
 .sider-version:focus-visible {
   color: var(--ant-color-primary);

@@ -93,6 +93,7 @@ export default function AppSidebar() {
   const lineDeployActive = pathname.startsWith('/lines/deploy');
   const lineListActive = pathname === '/' || pathname === '/lines' || (pathname.startsWith('/lines/') && !lineDeployActive);
   const selectedKey = lineDeployActive ? '/lines/deploy' : lineListActive ? '/lines' : pathname;
+  const panelVersion = window.X_UI_CUR_VER || '?';
 
   const toMenuItems = useCallback((items: typeof tabs): MenuProps['items'] =>
     items.map((tab) => {
@@ -173,6 +174,14 @@ export default function AppSidebar() {
           items={toMenuItems(utilItems)}
           onClick={onMenuClick}
         />
+        <div className="sider-footer">
+          <span
+            className={`sider-version${railCollapsed ? ' sider-version-collapsed' : ''}`}
+            title={`Relay Panel v${panelVersion}`}
+          >
+            {railCollapsed ? `v${panelVersion}` : `Relay Panel v${panelVersion}`}
+          </span>
+        </div>
       </Layout.Sider>
 
       <Drawer
@@ -226,6 +235,9 @@ export default function AppSidebar() {
           items={toMenuItems(utilItems)}
           onClick={(info) => { onMenuClick(info); setDrawerOpen(false); }}
         />
+        <div className="drawer-footer">
+          <span className="sider-version">Relay Panel v{panelVersion}</span>
+        </div>
       </Drawer>
 
       {!drawerOpen && (
