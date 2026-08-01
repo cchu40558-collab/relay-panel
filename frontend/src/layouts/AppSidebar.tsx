@@ -5,116 +5,35 @@ import { useTranslation } from 'react-i18next';
 import { Drawer, Layout, Menu } from 'antd';
 import type { MenuProps } from 'antd';
 import {
-  ApiOutlined,
   CloseOutlined,
   CloudServerOutlined,
-  ClusterOutlined,
-  CodeOutlined,
-  DashboardOutlined,
-  DatabaseOutlined,
-  ExportOutlined,
-  GithubOutlined,
-  GlobalOutlined,
-  HeartOutlined,
   ImportOutlined,
   LogoutOutlined,
-  MailOutlined,
   MenuOutlined,
-  MessageOutlined,
   MoonFilled,
   MoonOutlined,
-  ReadOutlined,
-  SafetyOutlined,
-  SettingOutlined,
   SunOutlined,
-  SwapOutlined,
-  TagsOutlined,
-  TeamOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
 
 import { HttpUtil } from '@/utils';
-import { formatPanelVersion } from '@/lib/panel-version';
 import { pauseAnimationsUntilLeave, useTheme } from '@/hooks/useTheme';
-import { useAllSettings } from '@/api/queries/useAllSettings';
 import './AppSidebar.css';
 
-const DONATE_URL = 'https://donate.sanaei.dev/';
-const DOCS_URL = 'https://docs.sanaei.dev/';
-const REPO_URL = 'https://github.com/MHSanaei/3x-ui';
 const LOGOUT_KEY = '__logout__';
 const RAIL_WIDTH = 72;
 const railStyle = { '--sider-rail': `${RAIL_WIDTH}px` } as CSSProperties;
 
 let hoveredAcrossRemounts = false;
 
-type IconName = 'dashboard' | 'inbound' | 'team' | 'groups' | 'setting' | 'tool' | 'cluster' | 'hosts' | 'logout' | 'apidocs' | 'outbound' | 'routing' | 'lines' | 'deploy' | 'diagnostics';
+type IconName = 'lines' | 'deploy' | 'diagnostics' | 'logout';
 
 const iconByName: Record<IconName, ComponentType> = {
-  dashboard: DashboardOutlined,
-  inbound: ImportOutlined,
-  team: TeamOutlined,
-  groups: TagsOutlined,
-  setting: SettingOutlined,
-  tool: ToolOutlined,
-  cluster: ClusterOutlined,
-  hosts: GlobalOutlined,
-  logout: LogoutOutlined,
-  apidocs: ApiOutlined,
-  outbound: ExportOutlined,
-  routing: SwapOutlined,
   lines: ImportOutlined,
   deploy: CloudServerOutlined,
   diagnostics: ToolOutlined,
+  logout: LogoutOutlined,
 };
-
-function DonateButton({ ariaLabel }: { ariaLabel: string }) {
-  return (
-    <a
-      href={DONATE_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="sidebar-donate"
-      aria-label={ariaLabel}
-      title={ariaLabel}
-    >
-      <HeartOutlined />
-    </a>
-  );
-}
-
-function DocsButton({ ariaLabel }: { ariaLabel: string }) {
-  return (
-    <a
-      href={DOCS_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="sidebar-docs"
-      aria-label={ariaLabel}
-      title={ariaLabel}
-    >
-      <ReadOutlined />
-    </a>
-  );
-}
-
-function VersionBadge({ version, collapsed }: { version: string; collapsed?: boolean }) {
-  if (!version) return null;
-  const label = formatPanelVersion(version);
-  return (
-    <a
-      href={REPO_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="sider-version"
-      aria-label={`GitHub ${label}`}
-      title={label}
-    >
-      <GithubOutlined />
-      {!collapsed && <span className="sider-version-text">{label}</span>}
-    </a>
-  );
-}
 
 function ThemeCycleButton({ id, isDark, isUltra, onCycle, ariaLabel }: {
   id: string;
@@ -142,10 +61,7 @@ export default function AppSidebar() {
   const { t } = useTranslation();
   const { isDark, isUltra, toggleTheme, toggleUltra } = useTheme();
   const navigate = useNavigate();
-  const { pathname, hash } = useLocation();
-  const { allSetting } = useAllSettings();
-  const showSubFormats = !!(allSetting.subJsonEnable || allSetting.subClashEnable);
-
+  const { pathname } = useLocation();
   const [hovered, setHovered] = useState(() => hoveredAcrossRemounts);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const railCollapsed = !hovered;
@@ -165,73 +81,25 @@ export default function AppSidebar() {
   }, [updateHovered]);
 
   const currentTheme: 'light' | 'dark' = isDark ? 'dark' : 'light';
-  const panelVersion = window.X_UI_CUR_VER || '';
-
   const tabs = useMemo<{ key: string; icon: IconName; title: string }[]>(() => [
     { key: '/lines', icon: 'lines', title: '线路列表' },
     { key: '/lines/deploy', icon: 'deploy', title: '线路部署' },
     { key: '/diagnostics', icon: 'diagnostics', title: '诊断日志' },
-    { key: '/settings', icon: 'setting', title: '系统设置' },
     { key: LOGOUT_KEY, icon: 'logout', title: t('logout') },
   ], [t]);
 
   const navItems = useMemo(() => tabs.filter((tab) => tab.icon !== 'logout'), [tabs]);
   const utilItems = useMemo(() => tabs.filter((tab) => tab.icon === 'logout'), [tabs]);
-
-  const settingsChildren = useMemo<NonNullable<MenuProps['items']>>(() => {
-    const children: NonNullable<MenuProps['items']> = [
-      { key: '/settings#general', icon: <SettingOutlined />, label: t('pages.settings.panelSettings') },
-      { key: '/settings#security', icon: <SafetyOutlined />, label: t('pages.settings.securitySettings') },
-      { key: '/settings#telegram', icon: <MessageOutlined />, label: t('pages.settings.TGBotSettings') },
-      { key: '/settings#email', icon: <MailOutlined />, label: t('pages.settings.emailSettings') },
-      { key: '/settings#subscription', icon: <CloudServerOutlined />, label: t('pages.settings.subSettings') },
-    ];
-    if (showSubFormats) {
-      children.push({ key: '/settings#subscription-formats', icon: <CodeOutlined />, label: 'Sub Formats' });
-    }
-    return children;
-  }, [t, showSubFormats]);
-
-  const xrayChildren = useMemo<NonNullable<MenuProps['items']>>(() => [
-    { key: '/xray#basic', icon: <SettingOutlined />, label: t('pages.xray.basicTemplate') },
-    { key: '/xray#balancer', icon: <ClusterOutlined />, label: t('pages.xray.Balancers') },
-    { key: '/xray#dns', icon: <DatabaseOutlined />, label: 'DNS' },
-    { key: '/xray#advanced', icon: <CodeOutlined />, label: t('pages.xray.advancedTemplate') },
-  ], [t]);
-  const settingsActive = pathname === '/settings';
-  const xrayActive = pathname === '/xray';
   const lineDeployActive = pathname.startsWith('/lines/deploy');
-  const lineListActive = pathname === '/lines' || (pathname.startsWith('/lines/') && !lineDeployActive);
-  const selectedKey = settingsActive
-    ? `/settings${hash || '#general'}`
-    : xrayActive
-      ? `/xray${hash || '#basic'}`
-      : lineDeployActive
-        ? '/lines/deploy'
-        : lineListActive
-          ? '/lines'
-      : (pathname === '' ? '/' : pathname);
-
-  const openSubmenu = settingsActive ? '/settings' : xrayActive ? '/xray' : null;
-  const [openKeys, setOpenKeys] = useState<string[]>(() => (openSubmenu ? [openSubmenu] : []));
-  useEffect(() => {
-    if (openSubmenu) {
-      setOpenKeys((keys) => (keys.includes(openSubmenu) ? keys : [...keys, openSubmenu]));
-    }
-  }, [openSubmenu]);
+  const lineListActive = pathname === '/' || pathname === '/lines' || (pathname.startsWith('/lines/') && !lineDeployActive);
+  const selectedKey = lineDeployActive ? '/lines/deploy' : lineListActive ? '/lines' : pathname;
 
   const toMenuItems = useCallback((items: typeof tabs): MenuProps['items'] =>
     items.map((tab) => {
       const Icon = iconByName[tab.icon];
-      if (tab.key === '/settings') {
-        return { key: tab.key, icon: <Icon />, label: tab.title, children: settingsChildren };
-      }
-      if (tab.key === '/xray') {
-        return { key: tab.key, icon: <Icon />, label: tab.title, children: xrayChildren };
-      }
       return { key: tab.key, icon: <Icon />, label: tab.title, title: '' };
     }),
-  [settingsChildren, xrayChildren]);
+  []);
 
   const openLink = useCallback(async (key: string) => {
     if (key === LOGOUT_KEY) {
@@ -275,12 +143,10 @@ export default function AppSidebar() {
       >
         <div className="sider-brand">
           <div className="brand-block">
-            <span className="brand-text">{railCollapsed ? '3X' : '3X-UI'}</span>
+            <span className="brand-text">{railCollapsed ? 'RP' : 'Relay Panel'}</span>
           </div>
           {!railCollapsed && (
             <div className="brand-actions">
-              <DocsButton ariaLabel={t('menu.docs') || 'Documentation'} />
-              <DonateButton ariaLabel={t('menu.donate') || 'Donate'} />
               <ThemeCycleButton
                 id="theme-cycle"
                 isDark={isDark}
@@ -295,8 +161,6 @@ export default function AppSidebar() {
           theme={currentTheme}
           mode="inline"
           selectedKeys={[selectedKey]}
-          openKeys={railCollapsed ? undefined : openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys as string[])}
           className="sider-nav"
           items={toMenuItems(navItems)}
           onClick={onMenuClick}
@@ -309,9 +173,6 @@ export default function AppSidebar() {
           items={toMenuItems(utilItems)}
           onClick={onMenuClick}
         />
-        <div className="sider-footer">
-          <VersionBadge version={panelVersion} collapsed={railCollapsed} />
-        </div>
       </Layout.Sider>
 
       <Drawer
@@ -329,11 +190,9 @@ export default function AppSidebar() {
       >
         <div className="drawer-header">
           <div className="brand-block">
-            <span className="drawer-brand">3X-UI</span>
+            <span className="drawer-brand">Relay Panel</span>
           </div>
           <div className="drawer-header-actions">
-            <DocsButton ariaLabel={t('menu.docs') || 'Documentation'} />
-            <DonateButton ariaLabel={t('menu.donate') || 'Donate'} />
             <ThemeCycleButton
               id="theme-cycle-drawer"
               isDark={isDark}
@@ -355,8 +214,6 @@ export default function AppSidebar() {
           theme={currentTheme}
           mode="inline"
           selectedKeys={[selectedKey]}
-          openKeys={openKeys}
-          onOpenChange={(keys) => setOpenKeys(keys as string[])}
           className="drawer-menu drawer-nav"
           items={toMenuItems(navItems)}
           onClick={(info) => { onMenuClick(info); setDrawerOpen(false); }}
@@ -369,9 +226,6 @@ export default function AppSidebar() {
           items={toMenuItems(utilItems)}
           onClick={(info) => { onMenuClick(info); setDrawerOpen(false); }}
         />
-        <div className="drawer-footer">
-          <VersionBadge version={panelVersion} />
-        </div>
       </Drawer>
 
       {!drawerOpen && (
