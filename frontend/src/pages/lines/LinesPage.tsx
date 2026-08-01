@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Key, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Collapse, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tabs, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import type { UploadFile } from 'antd';
 import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { keys } from '@/api/queryKeys';
@@ -144,6 +145,12 @@ type LineApplyResult = {
   errorMessage?: string;
 };
 
+type LineFormSubmission = {
+  values: LineFormValues;
+  certificateFile?: File;
+  privateKeyFile?: File;
+};
+
 async function fetchLineTypes(): Promise<LineType[]> {
   const msg = await HttpUtil.get<LineType[]>('/panel/api/line-types', undefined, { silent: true });
   if (!msg.success) throw new Error(msg.msg || 'Failed to fetch line types');
@@ -178,6 +185,14 @@ async function updateLine(id: number, payload: LineSavePayload): Promise<LineDet
   });
   if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to save line');
   return msg.obj;
+}
+
+async function uploadOriginCertificate(id: number, certificateFile: File, privateKeyFile: File): Promise<void> {
+  const formData = new FormData();
+  formData.append('certificate', certificateFile);
+  formData.append('privateKey', privateKeyFile);
+  const msg = await HttpUtil.post(`/panel/api/lines/${id}/origin-certificate`, formData, { silent: true });
+  if (!msg.success) throw new Error(msg.msg || 'Origin certificate upload failed');
 }
 
 async function applyLine(id: number): Promise<LineApplyResult> {
@@ -445,9 +460,11 @@ function LineEditor({
   initialValues?: LineFormValues;
   submitText: string;
   saving: boolean;
-  onSubmit: (values: LineFormValues) => void;
+  onSubmit: (submission: LineFormSubmission) => void;
 }) {
   const [form] = Form.useForm<LineFormValues>();
+  const [certificateFiles, setCertificateFiles] = useState<UploadFile[]>([]);
+  const [privateKeyFiles, setPrivateKeyFiles] = useState<UploadFile[]>([]);
 
   const validateHost = (label: string) => async (_: unknown, value?: string) => {
     const host = value?.trim() || '';
@@ -483,9 +500,26 @@ function LineEditor({
     });
   }, [form, initialValues, selectedType.name, type]);
 
+  const handleFinish = (values: LineFormValues) => {
+    const certificateFile = certificateFiles[0]?.originFileObj;
+    const privateKeyFile = privateKeyFiles[0]?.originFileObj;
+    const hasManualCertificate = Boolean(values.nginxCertFile?.trim());
+    const hasManualKey = Boolean(values.nginxKeyFile?.trim());
+    const hasUpload = Boolean(certificateFile || privateKeyFile);
+    if (values.nginxApply && !((hasManualCertificate && hasManualKey) || (certificateFile && privateKeyFile))) {
+      message.error(hasUpload ? '请同时选择源站证书和私钥文件' : '启用 Nginx 时请填写证书路径，或同时上传证书和私钥');
+      return;
+    }
+    if ((hasManualCertificate && !hasManualKey) || (!hasManualCertificate && hasManualKey)) {
+      message.error('手工证书路径和私钥路径必须同时填写');
+      return;
+    }
+    onSubmit({ values, certificateFile, privateKeyFile });
+  };
+
   return (
     <section className="line-form-shell">
-      <Form form={form} layout="vertical" onFinish={onSubmit}>
+      <Form form={form} layout="vertical" onFinish={handleFinish}>
         <div className="line-form-grid">
           <Form.Item label="线路名称" name="name">
             <Input placeholder={selectedType.name} />
@@ -546,35 +580,33 @@ function LineEditor({
               <Form.Item label="Nginx 配置路径" name="nginxConfigPath">
                 <Input placeholder="/etc/nginx/conf.d/x-ui-line-1.conf" />
               </Form.Item>
-              <Form.Item
-                label="源站证书路径"
-                name="nginxCertFile"
-                dependencies={['nginxApply']}
-                rules={[
-                  ({ getFieldValue }) => ({
-                    validator: async (_: unknown, value?: string) => {
-                      if (!getFieldValue('nginxApply') || value?.trim()) return Promise.resolve();
-                      return Promise.reject(new Error('启用 Nginx 写入时必须填写源站证书路径'));
-                    },
-                  }),
-                ]}
-              >
+              <Form.Item label="源站证书路径" name="nginxCertFile">
                 <Input placeholder="/etc/nginx/ssl/origin.crt" />
               </Form.Item>
-              <Form.Item
-                label="源站私钥路径"
-                name="nginxKeyFile"
-                dependencies={['nginxApply']}
-                rules={[
-                  ({ getFieldValue }) => ({
-                    validator: async (_: unknown, value?: string) => {
-                      if (!getFieldValue('nginxApply') || value?.trim()) return Promise.resolve();
-                      return Promise.reject(new Error('启用 Nginx 写入时必须填写源站私钥路径'));
-                    },
-                  }),
-                ]}
-              >
+              <Form.Item label="源站私钥路径" name="nginxKeyFile">
                 <Input placeholder="/etc/nginx/ssl/origin.key" />
+              </Form.Item>
+              <Form.Item label="上传源站证书">
+                <Upload
+                  accept=".crt,.cer,.pem"
+                  beforeUpload={() => false}
+                  fileList={certificateFiles}
+                  maxCount={1}
+                  onChange={({ fileList }) => setCertificateFiles(fileList.slice(-1))}
+                >
+                  <Button>选择证书文件</Button>
+                </Upload>
+              </Form.Item>
+              <Form.Item label="上传源站私钥">
+                <Upload
+                  accept=".key,.pem"
+                  beforeUpload={() => false}
+                  fileList={privateKeyFiles}
+                  maxCount={1}
+                  onChange={({ fileList }) => setPrivateKeyFiles(fileList.slice(-1))}
+                >
+                  <Button>选择私钥文件</Button>
+                </Upload>
               </Form.Item>
               <Form.Item label="写入 Nginx 并重载" name="nginxApply" valuePropName="checked">
                 <Switch />
@@ -813,8 +845,11 @@ export default function LinesPage() {
   );
 
   const createMutation = useMutation({
-    mutationFn: async (values: LineFormValues) => {
+    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission) => {
       const saved = await createLine(buildPayload(currentType, values));
+      if (certificateFile && privateKeyFile) {
+        await uploadOriginCertificate(saved.id, certificateFile, privateKeyFile);
+      }
       return applyLine(saved.id);
     },
     onSuccess: async ({ line, errorMessage }) => {
@@ -832,8 +867,11 @@ export default function LinesPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: async (values: LineFormValues) => {
+    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission) => {
       const saved = await updateLine(lineId, buildPayload(detailType, values));
+      if (certificateFile && privateKeyFile) {
+        await uploadOriginCertificate(saved.id, certificateFile, privateKeyFile);
+      }
       return applyLine(saved.id);
     },
     onSuccess: async ({ line, errorMessage }) => {
@@ -1083,7 +1121,7 @@ export default function LinesPage() {
                 initialValues={detailToFormValues(lineDetail)}
                 submitText="保存并应用"
                 saving={updateMutation.isPending}
-                onSubmit={(values) => updateMutation.mutate(values)}
+                onSubmit={(submission) => updateMutation.mutate(submission)}
               />
             )}
           </main>
@@ -1190,7 +1228,7 @@ export default function LinesPage() {
           selectedType={selectedType}
           submitText="保存并应用"
           saving={createMutation.isPending}
-          onSubmit={(values) => createMutation.mutate(values)}
+          onSubmit={(submission) => createMutation.mutate(submission)}
         />
       </main>
       </LinePageShell>

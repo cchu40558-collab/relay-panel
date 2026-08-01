@@ -1,12 +1,16 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -32,6 +36,8 @@ const (
 	LineTypeReality    = "reality_direct"
 	LineTypeTrojan     = "trojan_direct"
 )
+
+var managedNginxCertRoot = "/etc/line-panel/nginx-certs"
 
 type LineService struct{}
 
@@ -95,6 +101,12 @@ type LineShareLink struct {
 	URI   string `json:"uri"`
 }
 
+// OriginCertificateUploadResponse deliberately exposes only non-secret metadata.
+type OriginCertificateUploadResponse struct {
+	CertificateFile string    `json:"certificateFile"`
+	ExpiresAt       time.Time `json:"expiresAt"`
+}
+
 func (s *LineService) GetLineTypes() []LineTypeInfo {
 	return []LineTypeInfo{
 		{
@@ -153,6 +165,150 @@ func (s *LineService) GetLine(id int) (*LineDetail, error) {
 	}
 
 	return detail, nil
+}
+
+// StageCloudflareOriginCertificate validates an uploaded origin certificate pair and
+// stores it outside the database. It becomes active only during a later ApplyLine.
+func (s *LineService) StageCloudflareOriginCertificate(id int, certificatePEM, privateKeyPEM []byte) (*OriginCertificateUploadResponse, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("line ID is required")
+	}
+	expiresAt, err := validateOriginCertificatePair(certificatePEM, privateKeyPEM, time.Now())
+	if err != nil {
+		return nil, err
+	}
+
+	var line model.LineProfile
+	if err := database.GetDB().First(&line, id).Error; err != nil {
+		return nil, err
+	}
+	if line.Type != LineTypeCloudflare {
+		return nil, fmt.Errorf("origin certificates are supported only for Cloudflare lines")
+	}
+
+	certificateFile, keyFile, err := writeManagedOriginCertificate(id, certificatePEM, privateKeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	config := ensureLineConfigDefaults(line.Id, line.Type, decodeLineConfig(line.ConfigJSON))
+	config["nginxPendingCertFile"] = certificateFile
+	config["nginxPendingKeyFile"] = keyFile
+	config["nginxPendingCertExpiresAt"] = expiresAt.UTC().Format(time.RFC3339)
+	config["nginxCertMode"] = "managed"
+	if err := database.GetDB().Model(&line).Update("config_json", encodeLineConfig(config)).Error; err != nil {
+		_ = os.RemoveAll(filepath.Dir(certificateFile))
+		return nil, err
+	}
+	return &OriginCertificateUploadResponse{CertificateFile: certificateFile, ExpiresAt: expiresAt.UTC()}, nil
+}
+
+func validateOriginCertificatePair(certificatePEM, privateKeyPEM []byte, now time.Time) (time.Time, error) {
+	certificateBlock, _ := pem.Decode(certificatePEM)
+	if certificateBlock == nil || certificateBlock.Type != "CERTIFICATE" {
+		return time.Time{}, fmt.Errorf("origin certificate must be PEM encoded")
+	}
+	certificate, err := x509.ParseCertificate(certificateBlock.Bytes)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse origin certificate: %w", err)
+	}
+	if now.Before(certificate.NotBefore) {
+		return time.Time{}, fmt.Errorf("origin certificate is not valid yet")
+	}
+	if !now.Before(certificate.NotAfter) {
+		return time.Time{}, fmt.Errorf("origin certificate has expired")
+	}
+
+	keyBlock, _ := pem.Decode(privateKeyPEM)
+	if keyBlock == nil {
+		return time.Time{}, fmt.Errorf("origin private key must be PEM encoded")
+	}
+	signer, err := parseOriginPrivateKey(keyBlock)
+	if err != nil {
+		return time.Time{}, err
+	}
+	certificatePublicKey, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("encode origin certificate public key: %w", err)
+	}
+	privatePublicKey, err := x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return time.Time{}, fmt.Errorf("encode origin private key public key: %w", err)
+	}
+	if !bytes.Equal(certificatePublicKey, privatePublicKey) {
+		return time.Time{}, fmt.Errorf("origin certificate does not match the private key")
+	}
+	return certificate.NotAfter, nil
+}
+
+func parseOriginPrivateKey(block *pem.Block) (crypto.Signer, error) {
+	if key, err := x509.ParsePKCS8PrivateKey(block.Bytes); err == nil {
+		if signer, ok := key.(crypto.Signer); ok {
+			return signer, nil
+		}
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
+		return key, nil
+	}
+	return nil, fmt.Errorf("origin private key must be an unencrypted RSA, EC, or PKCS#8 PEM key")
+}
+
+func managedNginxCertLineDir(lineID int) string {
+	return filepath.Join(managedNginxCertRoot, fmt.Sprintf("line-%d", lineID))
+}
+
+func writeManagedOriginCertificate(lineID int, certificatePEM, privateKeyPEM []byte) (string, string, error) {
+	lineDir := managedNginxCertLineDir(lineID)
+	versionDir := filepath.Join(lineDir, fmt.Sprintf("%d-%s", time.Now().UnixNano(), uuid.NewString()))
+	if err := os.MkdirAll(versionDir, 0700); err != nil {
+		return "", "", fmt.Errorf("create managed certificate directory: %w", err)
+	}
+	for _, dir := range []string{managedNginxCertRoot, lineDir, versionDir} {
+		if err := os.Chmod(dir, 0700); err != nil {
+			_ = os.RemoveAll(versionDir)
+			return "", "", fmt.Errorf("secure managed certificate directory: %w", err)
+		}
+	}
+	certificateFile := filepath.Join(versionDir, "origin.crt")
+	keyFile := filepath.Join(versionDir, "origin.key")
+	if err := writePrivateFileAtomically(certificateFile, certificatePEM, 0644); err != nil {
+		_ = os.RemoveAll(versionDir)
+		return "", "", err
+	}
+	if err := writePrivateFileAtomically(keyFile, privateKeyPEM, 0600); err != nil {
+		_ = os.RemoveAll(versionDir)
+		return "", "", err
+	}
+	return certificateFile, keyFile, nil
+}
+
+func writePrivateFileAtomically(path string, content []byte, permission os.FileMode) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".upload-*")
+	if err != nil {
+		return fmt.Errorf("create certificate file: %w", err)
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if _, err := temporary.Write(content); err != nil {
+		temporary.Close()
+		return fmt.Errorf("write certificate file: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return fmt.Errorf("sync certificate file: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close certificate file: %w", err)
+	}
+	if err := os.Chmod(temporaryPath, permission); err != nil {
+		return fmt.Errorf("set certificate file permissions: %w", err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return fmt.Errorf("activate certificate file: %w", err)
+	}
+	return nil
 }
 
 func (s *LineService) CreateLine(req LineSaveRequest) (*LineDetail, error) {
@@ -297,6 +453,11 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		}
 
 		config := ensureLineConfigDefaults(line.Id, line.Type, decodeLineConfig(line.ConfigJSON))
+		if line.Type == LineTypeCloudflare {
+			if err := promotePendingOriginCertificate(config); err != nil {
+				return wrapLineApplyFailure("validate", "Origin certificate validation failed", err)
+			}
+		}
 		if err := tx.Model(&line).Updates(map[string]any{
 			"status":      "applying",
 			"last_error":  "",
@@ -415,6 +576,9 @@ func (s *LineService) DeleteLine(id int) (*LineDeleteResult, error) {
 		return result, err
 	}
 	result.Success = true
+	if err := os.RemoveAll(managedNginxCertLineDir(line.Id)); err != nil {
+		result.Message = fmt.Sprintf("line removed, but managed origin certificates could not be cleaned up: %v", err)
+	}
 	return result, nil
 }
 
@@ -1885,6 +2049,10 @@ func mergePreservedLineConfig(existing map[string]string, next map[string]string
 		"realityFingerprint",
 		"realitySpiderX",
 		"realityMinClientVer",
+		"nginxPendingCertFile",
+		"nginxPendingKeyFile",
+		"nginxPendingCertExpiresAt",
+		"nginxCertMode",
 	}
 	for _, key := range preserveKeys {
 		if strings.TrimSpace(next[key]) == "" && strings.TrimSpace(existing[key]) != "" {
@@ -1892,6 +2060,27 @@ func mergePreservedLineConfig(existing map[string]string, next map[string]string
 		}
 	}
 	return next
+}
+
+func promotePendingOriginCertificate(config map[string]string) error {
+	pendingCertificate := strings.TrimSpace(config["nginxPendingCertFile"])
+	pendingKey := strings.TrimSpace(config["nginxPendingKeyFile"])
+	if pendingCertificate == "" && pendingKey == "" {
+		return nil
+	}
+	if pendingCertificate == "" || pendingKey == "" {
+		return fmt.Errorf("pending origin certificate is incomplete; upload both certificate and private key again")
+	}
+	if !truthy(config["nginxApply"]) {
+		return nil
+	}
+	config["nginxCertFile"] = pendingCertificate
+	config["nginxKeyFile"] = pendingKey
+	config["nginxCertMode"] = "managed"
+	delete(config, "nginxPendingCertFile")
+	delete(config, "nginxPendingKeyFile")
+	delete(config, "nginxPendingCertExpiresAt")
+	return nil
 }
 
 func ensureRealityConfig(config map[string]string) error {

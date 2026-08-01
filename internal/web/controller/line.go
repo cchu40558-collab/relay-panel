@@ -2,6 +2,8 @@ package controller
 
 import (
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 
@@ -32,12 +34,66 @@ func (a *LineController) initRouter(g *gin.RouterGroup) {
 	lines.GET("/:id", a.getLine)
 	lines.POST("", a.createLine)
 	lines.POST("/prepare", a.prepareLine)
+	lines.POST("/:id/origin-certificate", a.uploadOriginCertificate)
 	lines.POST("/:id/apply", a.applyLine)
 	lines.POST("/:id/check", a.checkLine)
 	lines.POST("/:id/delete", a.deleteLine)
 	lines.POST("/batch-delete", a.batchDeleteLines)
 	lines.GET("/:id/share", a.shareLine)
 	lines.POST("/:id", a.updateLine)
+}
+
+const maxOriginCertificateUploadSize = 2*1024*1024 + 64*1024
+
+func (a *LineController) uploadOriginCertificate(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOriginCertificateUploadSize)
+	certificateFile, err := c.FormFile("certificate")
+	if err != nil {
+		jsonMsg(c, "Upload origin certificate", fmt.Errorf("certificate file is required and must be smaller than 1 MiB"))
+		return
+	}
+	privateKeyFile, err := c.FormFile("privateKey")
+	if err != nil {
+		jsonMsg(c, "Upload origin certificate", fmt.Errorf("private key file is required and must be smaller than 1 MiB"))
+		return
+	}
+	if certificateFile.Size <= 0 || certificateFile.Size > 1024*1024 || privateKeyFile.Size <= 0 || privateKeyFile.Size > 1024*1024 {
+		jsonMsg(c, "Upload origin certificate", fmt.Errorf("each file must be smaller than 1 MiB"))
+		return
+	}
+
+	certificate, err := readMultipartFile(certificateFile)
+	if err != nil {
+		jsonMsg(c, "Upload origin certificate", err)
+		return
+	}
+	privateKey, err := readMultipartFile(privateKeyFile)
+	if err != nil {
+		jsonMsg(c, "Upload origin certificate", err)
+		return
+	}
+
+	result, err := a.lineService.StageCloudflareOriginCertificate(id, certificate, privateKey)
+	jsonMsgObj(c, "Origin certificate uploaded", result, err)
+}
+
+func readMultipartFile(fileHeader *multipart.FileHeader) ([]byte, error) {
+	file, err := fileHeader.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open upload: %w", err)
+	}
+	defer file.Close()
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, fmt.Errorf("read upload: %w", err)
+	}
+	return content, nil
 }
 
 func (a *LineController) getLineTypes(c *gin.Context) {
