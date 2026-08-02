@@ -1,14 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Key, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Collapse, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tabs, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Collapse, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
 import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { keys } from '@/api/queryKeys';
-import { ClipboardManager, HttpUtil } from '@/utils';
+import { ClipboardManager, HttpUtil, SizeFormatter } from '@/utils';
 import AppSidebar from '@/layouts/AppSidebar';
 import './LinesPage.css';
 
@@ -35,6 +35,8 @@ type LineProfile = {
   entryPort: number;
   lastError: string;
   lastCheckAt: number;
+  lastInboundLatencyMs?: number;
+  lastOutboundLatencyMs?: number;
 };
 
 type LineDetail = LineProfile & {
@@ -67,11 +69,28 @@ type LineCheckResponse = {
   passCount: number;
   warnCount: number;
   failCount: number;
+  metrics?: LineMetrics;
   items: Array<{
     name: string;
     status: string;
     message: string;
   }>;
+};
+
+type LineMetrics = {
+  lineId: number;
+  inboundTag: string;
+  outboundTag: string;
+  inboundSpeedUp: number;
+  inboundSpeedDown: number;
+  outboundSpeedUp: number;
+  outboundSpeedDown: number;
+  inboundTraffic: number;
+  outboundTraffic: number;
+  totalTraffic: number;
+  inboundLatencyMs: number;
+  outboundLatencyMs: number;
+  lastCheckedAt: number;
 };
 
 type LineShareResponse = {
@@ -88,25 +107,29 @@ type LineDeleteResult = {
   message?: string;
 };
 
-type LineColumnKey = 'status' | 'name' | 'chain' | 'entry' | 'actions';
+type LineColumnKey = 'status' | 'name' | 'speed' | 'inboundLatency' | 'outboundLatency' | 'traffic' | 'actions';
 
 const lineColumnDefaults: Record<LineColumnKey, number> = {
   status: 96,
   name: 220,
-  chain: 460,
-  entry: 260,
+  speed: 210,
+  inboundLatency: 140,
+  outboundLatency: 140,
+  traffic: 150,
   actions: 190,
 };
 
 const lineColumnMinimums: Record<LineColumnKey, number> = {
   status: 80,
   name: 150,
-  chain: 320,
-  entry: 180,
+  speed: 150,
+  inboundLatency: 110,
+  outboundLatency: 110,
+  traffic: 120,
   actions: 160,
 };
 
-const lineColumnWidthsStorageKey = 'line-table-column-widths-v1';
+const lineColumnWidthsStorageKey = 'line-table-column-widths-v2';
 
 type LineFormValues = {
   name?: string;
@@ -163,6 +186,18 @@ async function fetchLines(): Promise<LineProfile[]> {
   return Array.isArray(msg.obj) ? msg.obj : [];
 }
 
+async function fetchLineMetrics(): Promise<LineMetrics[]> {
+  const msg = await HttpUtil.get<LineMetrics[]>('/panel/api/lines/metrics', undefined, { silent: true });
+  if (!msg.success) throw new Error(msg.msg || 'Failed to fetch line metrics');
+  return Array.isArray(msg.obj) ? msg.obj : [];
+}
+
+async function fetchSingleLineMetrics(id: number): Promise<LineMetrics> {
+  const msg = await HttpUtil.get<LineMetrics>(`/panel/api/lines/${id}/metrics`, undefined, { silent: true });
+  if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to fetch line metrics');
+  return msg.obj;
+}
+
 async function fetchLine(id: number): Promise<LineDetail> {
   const msg = await HttpUtil.get<LineDetail>(`/panel/api/lines/${id}`, undefined, { silent: true });
   if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to fetch line');
@@ -208,7 +243,17 @@ async function applyLine(id: number): Promise<LineApplyResult> {
 }
 
 async function checkLine(id: number): Promise<LineCheckResponse> {
-  const msg = await HttpUtil.post<LineCheckResponse>(`/panel/api/lines/${id}/check`, {}, {
+  let inboundLatencyMs: number;
+  const startedAt = performance.now();
+  try {
+    await fetchSingleLineMetrics(id);
+    inboundLatencyMs = Math.max(1, Math.round(performance.now() - startedAt));
+  } catch {
+    inboundLatencyMs = 0;
+  }
+  const msg = await HttpUtil.post<LineCheckResponse>(`/panel/api/lines/${id}/check`, {
+    inboundLatencyMs,
+  }, {
     headers: { 'Content-Type': 'application/json' },
   });
   if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to check line');
@@ -273,6 +318,94 @@ function statusTag(status: string) {
   const color = status === 'active' ? 'green' : status === 'failed' || status === 'apply_failed' ? 'red' : status === 'warning' || status === 'pending_apply' || status === 'applying' || status === 'pending_check' ? 'gold' : 'default';
   const text = status === 'active' ? '正常' : status === 'failed' || status === 'apply_failed' ? '异常' : status === 'warning' ? '警告' : status === 'applying' ? '应用中' : status === 'pending_check' ? '待检测' : status === 'pending_apply' ? '待应用' : '草稿';
   return <Tag color={color}>{text}</Tag>;
+}
+
+function formatLatency(value?: number) {
+  return value && value > 0 ? `${value} ms` : '--';
+}
+
+function LineSpeedCell({ up, down }: { up?: number; down?: number }) {
+  const hasTraffic = Boolean((up && up > 0) || (down && down > 0));
+  if (!hasTraffic) {
+    return (
+      <div className="line-speed-cell">
+        <span>--</span>
+        <span>--</span>
+      </div>
+    );
+  }
+  return (
+    <div className="line-speed-cell">
+      <span className="line-speed-up">↑ {SizeFormatter.speedFormat(up)}</span>
+      <span className="line-speed-down">↓ {SizeFormatter.speedFormat(down)}</span>
+    </div>
+  );
+}
+
+function LineChainDiagram({ line }: { line: LineDetail }) {
+  const nodes = line.type === 'cloudflare_ws_tls'
+    ? ['手机/客户端', 'Cloudflare', 'Nginx', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站']
+    : ['手机/客户端', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站'];
+  return (
+    <section className="line-detail-card">
+      <Typography.Title level={5}>链路结构</Typography.Title>
+      <div className="line-chain-diagram">
+        {nodes.map((node, index) => (
+          <div className="line-chain-step" key={`${node}-${index}`}>
+            <span>{node}</span>
+            {index < nodes.length - 1 && <i aria-hidden="true" />}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LineMonitorCards({ line, metrics }: { line: LineDetail; metrics?: LineMetrics }) {
+  const outboundLabel = line.outbound?.host ? `${line.outbound.type.toUpperCase()} / ${line.outbound.host}:${line.outbound.port}` : '--';
+  return (
+    <section className="line-detail-card">
+      <Typography.Title level={5}>三段监控</Typography.Title>
+      <div className="line-monitor-grid">
+        <div className="line-monitor-card">
+          <div className="line-monitor-title">第1段 入站侧</div>
+          <Typography.Text type="secondary">用户/CDN -&gt; 服务器入口</Typography.Text>
+          <dl>
+            <dt>实时吞吐</dt>
+            <dd><LineSpeedCell up={metrics?.inboundSpeedUp} down={metrics?.inboundSpeedDown} /></dd>
+            <dt>累计流量</dt>
+            <dd>{SizeFormatter.sizeFormat(metrics?.inboundTraffic)}</dd>
+            <dt>入站延迟</dt>
+            <dd>{formatLatency(metrics?.inboundLatencyMs)}</dd>
+          </dl>
+        </div>
+        <div className="line-monitor-card">
+          <div className="line-monitor-title">第2段 出站侧</div>
+          <Typography.Text type="secondary">服务器 -&gt; 住宅代理</Typography.Text>
+          <dl>
+            <dt>实时吞吐</dt>
+            <dd><LineSpeedCell up={metrics?.outboundSpeedUp} down={metrics?.outboundSpeedDown} /></dd>
+            <dt>累计流量</dt>
+            <dd>{SizeFormatter.sizeFormat(metrics?.outboundTraffic)}</dd>
+            <dt>住宅出口</dt>
+            <dd>{outboundLabel}</dd>
+          </dl>
+        </div>
+        <div className="line-monitor-card">
+          <div className="line-monitor-title">第3段 目标访问</div>
+          <Typography.Text type="secondary">住宅代理 -&gt; 测试网站</Typography.Text>
+          <dl>
+            <dt>出站延迟</dt>
+            <dd>{formatLatency(metrics?.outboundLatencyMs)}</dd>
+            <dt>测试站点</dt>
+            <dd>www.gstatic.com</dd>
+            <dt>最近检测</dt>
+            <dd>{formatLineTime(metrics?.lastCheckedAt || line.lastCheckAt)}</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function buildPayload(type: string, values: LineFormValues): LineSavePayload {
@@ -791,8 +924,10 @@ export default function LinesPage() {
       return {
         status: Math.max(lineColumnMinimums.status, parsed.status ?? lineColumnDefaults.status),
         name: Math.max(lineColumnMinimums.name, parsed.name ?? lineColumnDefaults.name),
-        chain: Math.max(lineColumnMinimums.chain, parsed.chain ?? lineColumnDefaults.chain),
-        entry: Math.max(lineColumnMinimums.entry, parsed.entry ?? lineColumnDefaults.entry),
+        speed: Math.max(lineColumnMinimums.speed, parsed.speed ?? lineColumnDefaults.speed),
+        inboundLatency: Math.max(lineColumnMinimums.inboundLatency, parsed.inboundLatency ?? lineColumnDefaults.inboundLatency),
+        outboundLatency: Math.max(lineColumnMinimums.outboundLatency, parsed.outboundLatency ?? lineColumnDefaults.outboundLatency),
+        traffic: Math.max(lineColumnMinimums.traffic, parsed.traffic ?? lineColumnDefaults.traffic),
         actions: Math.max(lineColumnMinimums.actions, parsed.actions ?? lineColumnDefaults.actions),
       };
     } catch {
@@ -819,11 +954,26 @@ export default function LinesPage() {
     queryKey: keys.lines.list(),
     queryFn: fetchLines,
   });
+  const { data: lineMetrics = [] } = useQuery({
+    queryKey: keys.lines.metrics(),
+    queryFn: fetchLineMetrics,
+    refetchInterval: 5000,
+  });
   const { data: lineDetail, isLoading: isLineLoading } = useQuery({
     queryKey: keys.lines.detail(lineId),
     queryFn: () => fetchLine(lineId),
     enabled: lineId > 0,
   });
+  const { data: lineDetailMetrics } = useQuery({
+    queryKey: keys.lines.metric(lineId),
+    queryFn: () => fetchSingleLineMetrics(lineId),
+    enabled: lineId > 0,
+    refetchInterval: 5000,
+  });
+  const metricsByLineId = useMemo(
+    () => new Map(lineMetrics.map((item) => [item.lineId, item])),
+    [lineMetrics],
+  );
   const diagnosticQueries = useQueries({
     queries: isDiagnostics
       ? lines.map((line) => ({
@@ -1047,15 +1197,27 @@ export default function LinesPage() {
       ),
     },
     {
-      title: columnTitle('链路结构', 'chain'),
-      dataIndex: 'chainText',
-      width: columnWidths.chain,
-      render: (value: string) => <span className="line-chain-cell">{value}</span>,
+      title: columnTitle('实时吞吐', 'speed'),
+      width: columnWidths.speed,
+      render: (_, row) => {
+        const metrics = metricsByLineId.get(row.id);
+        return <LineSpeedCell up={metrics?.inboundSpeedUp} down={metrics?.inboundSpeedDown} />;
+      },
     },
     {
-      title: columnTitle('入口', 'entry'),
-      width: columnWidths.entry,
-      render: (_, row) => row.entryHost ? `${row.entryHost}:${row.entryPort}` : '-',
+      title: columnTitle('入站延迟', 'inboundLatency'),
+      width: columnWidths.inboundLatency,
+      render: (_, row) => formatLatency(metricsByLineId.get(row.id)?.inboundLatencyMs ?? row.lastInboundLatencyMs),
+    },
+    {
+      title: columnTitle('出站延迟', 'outboundLatency'),
+      width: columnWidths.outboundLatency,
+      render: (_, row) => formatLatency(metricsByLineId.get(row.id)?.outboundLatencyMs ?? row.lastOutboundLatencyMs),
+    },
+    {
+      title: columnTitle('累计流量', 'traffic'),
+      width: columnWidths.traffic,
+      render: (_, row) => SizeFormatter.sizeFormat(metricsByLineId.get(row.id)?.totalTraffic),
     },
     {
       title: columnTitle('操作', 'actions'),
@@ -1067,6 +1229,9 @@ export default function LinesPage() {
           </Button>
           <Button size="small" icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(row.id)}>
             分享
+          </Button>
+          <Button size="small" onClick={() => navigate(`/lines/${row.id}`)}>
+            详情
           </Button>
           <Dropdown
             trigger={['click']}
@@ -1085,7 +1250,6 @@ export default function LinesPage() {
       ),
     },
   ];
-
   if (isDiagnostics) {
     return (
       <LinePageShell>
@@ -1163,39 +1327,24 @@ export default function LinesPage() {
           ) : (
             <>
               {lineDetail.lastError && <Alert className="line-detail-alert" type="error" showIcon message="当前线路存在异常" description={lineDetail.lastError} />}
-              <Tabs
-                className="line-detail-tabs"
-                items={[
-                  {
-                    key: 'overview',
-                    label: '概览',
-                    children: (
-                      <Descriptions className="line-overview" bordered size="small" column={{ xs: 1, md: 2 }} items={[
-                        { key: 'type', label: '线路类型', children: typeLabel(lineDetail.type) },
-                        { key: 'status', label: '当前状态', children: statusTag(lineDetail.status) },
-                        { key: 'entry', label: '入口', children: lineDetail.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : '-' },
-                        { key: 'outbound', label: '住宅出口', children: lineDetail.outbound?.host ? `${lineDetail.outbound.type.toUpperCase()} / ${lineDetail.outbound.host}:${lineDetail.outbound.port}` : '-' },
-                        { key: 'check', label: '最近检测', children: formatLineTime(lineDetail.lastCheckAt) },
-                        { key: 'name', label: '线路名称', children: lineDetail.name || typeLabel(lineDetail.type) },
-                      ]} />),
-                  },
-                  { key: 'operations', label: '操作记录', children: <LineOperations logs={lineDetail.logs} /> },
-                  {
-                    key: 'health',
-                    label: '检测结果',
-                    children: (
-                      <div className="line-health-panel">
-                        <Typography.Title level={5}>最近检测</Typography.Title>
-                        <Space direction="vertical">
-                          {statusTag(lineDetail.status)}
-                          <Typography.Text type="secondary">最近检测时间：{formatLineTime(lineDetail.lastCheckAt)}</Typography.Text>
-                          <Button icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(lineId)}>重新检测</Button>
-                        </Space>
-                      </div>
-                    ),
-                  },
-                ]}
-              />
+              <section className="line-detail-card">
+                <Typography.Title level={5}>运行状态</Typography.Title>
+                <Descriptions className="line-overview" bordered size="small" column={{ xs: 1, md: 4 }} items={[
+                  { key: 'status', label: '当前状态', children: statusTag(lineDetail.status) },
+                  { key: 'entry', label: '入口', children: lineDetail.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : '-' },
+                  { key: 'traffic', label: '累计流量', children: SizeFormatter.sizeFormat(lineDetailMetrics?.totalTraffic) },
+                  { key: 'latency', label: '最近检测', children: `${formatLatency(lineDetailMetrics?.inboundLatencyMs)} / ${formatLatency(lineDetailMetrics?.outboundLatencyMs)}` },
+                ]} />
+              </section>
+              <LineChainDiagram line={lineDetail} />
+              <LineMonitorCards line={lineDetail} metrics={lineDetailMetrics} />
+              <section className="line-detail-card">
+                <div className="line-detail-section-heading">
+                  <Typography.Title level={5}>检测记录</Typography.Title>
+                  <Button icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(lineId)}>重新检测</Button>
+                </div>
+                <LineOperations logs={lineDetail.logs} />
+              </section>
             </>
           )}
         </main>
@@ -1278,3 +1427,5 @@ export default function LinesPage() {
     </LinePageShell>
   );
 }
+
+

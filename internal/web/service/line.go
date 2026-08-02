@@ -22,6 +22,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+	outboundsvc "github.com/mhsanaei/3x-ui/v3/internal/web/service/outbound"
 )
 
 const (
@@ -41,6 +43,23 @@ const (
 var managedNginxCertRoot = "/etc/line-panel/nginx-certs"
 
 type LineService struct{}
+
+const defaultLineOutboundTestURL = "https://www.gstatic.com/generate_204"
+
+var lineMetricsSpeedCache = struct {
+	sync.Mutex
+	samples map[int]lineTrafficSample
+}{
+	samples: make(map[int]lineTrafficSample),
+}
+
+type lineTrafficSample struct {
+	InboundUp    int64
+	InboundDown  int64
+	OutboundUp   int64
+	OutboundDown int64
+	At           time.Time
+}
 
 type LineSaveRequest struct {
 	Type             string            `json:"type"`
@@ -77,6 +96,7 @@ type LineCheckResponse struct {
 	PassCount int             `json:"passCount"`
 	WarnCount int             `json:"warnCount"`
 	FailCount int             `json:"failCount"`
+	Metrics   *LineMetrics    `json:"metrics,omitempty"`
 	Items     []LineCheckItem `json:"items"`
 }
 
@@ -100,6 +120,22 @@ type LineShareResponse struct {
 type LineShareLink struct {
 	Label string `json:"label"`
 	URI   string `json:"uri"`
+}
+
+type LineMetrics struct {
+	LineID            int    `json:"lineId"`
+	InboundTag        string `json:"inboundTag"`
+	OutboundTag       string `json:"outboundTag"`
+	InboundSpeedUp    int64  `json:"inboundSpeedUp"`
+	InboundSpeedDown  int64  `json:"inboundSpeedDown"`
+	OutboundSpeedUp   int64  `json:"outboundSpeedUp"`
+	OutboundSpeedDown int64  `json:"outboundSpeedDown"`
+	InboundTraffic    int64  `json:"inboundTraffic"`
+	OutboundTraffic   int64  `json:"outboundTraffic"`
+	TotalTraffic      int64  `json:"totalTraffic"`
+	InboundLatencyMs  int64  `json:"inboundLatencyMs"`
+	OutboundLatencyMs int64  `json:"outboundLatencyMs"`
+	LastCheckedAt     int64  `json:"lastCheckedAt"`
 }
 
 // OriginCertificateUploadResponse deliberately exposes only non-secret metadata.
@@ -133,6 +169,113 @@ func (s *LineService) ListLines() ([]model.LineProfile, error) {
 	var lines []model.LineProfile
 	err := database.GetDB().Order("id desc").Find(&lines).Error
 	return lines, err
+}
+
+func (s *LineService) ListLineMetrics() ([]LineMetrics, error) {
+	var lines []model.LineProfile
+	if err := database.GetDB().Order("id desc").Find(&lines).Error; err != nil {
+		return nil, err
+	}
+	metrics := make([]LineMetrics, 0, len(lines))
+	for _, line := range lines {
+		item, err := s.buildLineMetrics(line)
+		if err != nil {
+			return nil, err
+		}
+		metrics = append(metrics, *item)
+	}
+	return metrics, nil
+}
+
+func (s *LineService) GetLineMetrics(id int) (*LineMetrics, error) {
+	var line model.LineProfile
+	if err := database.GetDB().First(&line, id).Error; err != nil {
+		return nil, err
+	}
+	return s.buildLineMetrics(line)
+}
+
+func (s *LineService) buildLineMetrics(line model.LineProfile) (*LineMetrics, error) {
+	inboundTag := fmt.Sprintf("line-%d-in", line.Id)
+	outboundTag := line.OutboundTag
+	if outboundTag == "" {
+		outboundTag = fmt.Sprintf("line-%d-out", line.Id)
+	}
+
+	var inbound model.Inbound
+	inboundErr := database.GetDB().Where("tag = ? AND node_id IS NULL", inboundTag).First(&inbound).Error
+	if inboundErr != nil && !errors.Is(inboundErr, gorm.ErrRecordNotFound) {
+		return nil, inboundErr
+	}
+
+	var outboundTraffic model.OutboundTraffics
+	outboundErr := database.GetDB().Where("tag = ?", outboundTag).First(&outboundTraffic).Error
+	if outboundErr != nil && !errors.Is(outboundErr, gorm.ErrRecordNotFound) {
+		return nil, outboundErr
+	}
+
+	inboundTotal := saturatingSum(inbound.Up, inbound.Down)
+	outboundTotal := outboundTraffic.Total
+	if outboundTotal <= 0 {
+		outboundTotal = saturatingSum(outboundTraffic.Up, outboundTraffic.Down)
+	}
+	total := inboundTotal
+	if total <= 0 {
+		total = outboundTotal
+	}
+
+	metrics := &LineMetrics{
+		LineID:            line.Id,
+		InboundTag:        inboundTag,
+		OutboundTag:       outboundTag,
+		InboundTraffic:    inboundTotal,
+		OutboundTraffic:   outboundTotal,
+		TotalTraffic:      total,
+		InboundLatencyMs:  line.LastInboundLatencyMs,
+		OutboundLatencyMs: line.LastOutboundLatencyMs,
+		LastCheckedAt:     line.LastCheckAt,
+	}
+	metrics.InboundSpeedUp, metrics.InboundSpeedDown, metrics.OutboundSpeedUp, metrics.OutboundSpeedDown = lineMetricsSpeed(line.Id, lineTrafficSample{
+		InboundUp:    inbound.Up,
+		InboundDown:  inbound.Down,
+		OutboundUp:   outboundTraffic.Up,
+		OutboundDown: outboundTraffic.Down,
+		At:           time.Now(),
+	})
+	return metrics, nil
+}
+
+func lineMetricsSpeed(lineID int, sample lineTrafficSample) (int64, int64, int64, int64) {
+	lineMetricsSpeedCache.Lock()
+	defer lineMetricsSpeedCache.Unlock()
+
+	prev, ok := lineMetricsSpeedCache.samples[lineID]
+	lineMetricsSpeedCache.samples[lineID] = sample
+	if !ok || sample.At.Before(prev.At) || sample.At.Equal(prev.At) {
+		return 0, 0, 0, 0
+	}
+	seconds := sample.At.Sub(prev.At).Seconds()
+	if seconds <= 0 {
+		return 0, 0, 0, 0
+	}
+	return bytesPerSecond(prev.InboundUp, sample.InboundUp, seconds),
+		bytesPerSecond(prev.InboundDown, sample.InboundDown, seconds),
+		bytesPerSecond(prev.OutboundUp, sample.OutboundUp, seconds),
+		bytesPerSecond(prev.OutboundDown, sample.OutboundDown, seconds)
+}
+
+func bytesPerSecond(prev int64, current int64, seconds float64) int64 {
+	if current <= prev {
+		return 0
+	}
+	return int64(float64(current-prev) / seconds)
+}
+
+func saturatingSum(a int64, b int64) int64 {
+	if b > database.TrafficMax-a {
+		return database.TrafficMax
+	}
+	return a + b
 }
 
 func (s *LineService) GetLine(id int) (*LineDetail, error) {
@@ -776,6 +919,102 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 	}
 
 	return resp, nil
+}
+
+func (s *LineService) CheckLineWithInboundLatency(id int, inboundLatencyMs int64) (*LineCheckResponse, error) {
+	resp, err := s.CheckLine(id)
+	if err != nil {
+		return nil, err
+	}
+
+	line, outbound, _, _, err := loadLineRuntime(id)
+	if err != nil {
+		return nil, err
+	}
+	if inboundLatencyMs <= 0 {
+		inboundLatencyMs = line.LastInboundLatencyMs
+	}
+
+	outboundLatencyMs := line.LastOutboundLatencyMs
+	if outbound == nil || strings.TrimSpace(outbound.Host) == "" || outbound.Port <= 0 {
+		resp.Items = append(resp.Items, LineCheckItem{Name: "出站延迟", Status: "fail", Message: "住宅出口地址或端口未填写"})
+		resp.FailCount++
+	} else {
+		delay, delayErr := testLineOutboundLatency(line, outbound)
+		if delayErr != nil {
+			outboundLatencyMs = 0
+			resp.Items = append(resp.Items, LineCheckItem{Name: "出站延迟", Status: "fail", Message: delayErr.Error()})
+			resp.FailCount++
+		} else {
+			outboundLatencyMs = delay
+			resp.Items = append(resp.Items, LineCheckItem{Name: "出站延迟", Status: "pass", Message: fmt.Sprintf("%d ms", delay)})
+			resp.PassCount++
+		}
+	}
+
+	resp.Status = "active"
+	if resp.FailCount > 0 {
+		resp.Status = "failed"
+	} else if resp.WarnCount > 0 {
+		resp.Status = "warning"
+	}
+
+	itemsJSON := mustJSON(resp.Items)
+	now := time.Now().Unix()
+	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&model.LineCheckResult{
+			LineId:    line.Id,
+			Status:    resp.Status,
+			PassCount: resp.PassCount,
+			WarnCount: resp.WarnCount,
+			FailCount: resp.FailCount,
+			ItemsJSON: itemsJSON,
+		}).Error; err != nil {
+			return err
+		}
+		if err := createLineLog(tx, line.Id, "check", lineStatusToLogLevel(resp.Status), "线路延迟检测完成", fmt.Sprintf("入站 %d ms，出站 %d ms", inboundLatencyMs, outboundLatencyMs)); err != nil {
+			return err
+		}
+		return tx.Model(&model.LineProfile{}).Where("id = ?", line.Id).Updates(map[string]any{
+			"status":                   resp.Status,
+			"last_check_at":            now,
+			"last_inbound_latency_ms":  inboundLatencyMs,
+			"last_outbound_latency_ms": outboundLatencyMs,
+			"last_error":               firstFailedLineCheckMessage(resp.Items),
+		}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	resp.Metrics, _ = s.GetLineMetrics(line.Id)
+	return resp, nil
+}
+
+func testLineOutboundLatency(line model.LineProfile, outbound *model.LineOutbound) (int64, error) {
+	outboundTag := line.OutboundTag
+	if outboundTag == "" {
+		outboundTag = fmt.Sprintf("line-%d-out", line.Id)
+	}
+	outboundConfig := buildResidentialOutboundConfig(outboundTag, outbound)
+	outboundJSON, err := json.Marshal(outboundConfig)
+	if err != nil {
+		return 0, err
+	}
+	result, err := (&outboundsvc.OutboundService{}).TestOutbound(string(outboundJSON), defaultLineOutboundTestURL, "", "real")
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 0, fmt.Errorf("outbound latency test returned no result")
+	}
+	if !result.Success {
+		if result.Error != "" {
+			return 0, errors.New(result.Error)
+		}
+		return 0, fmt.Errorf("outbound latency test failed")
+	}
+	return result.Delay, nil
 }
 
 func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {

@@ -28,6 +28,8 @@ export const keys = {
     root: () => ['lines'] as const,
     list: () => ['lines', 'list'] as const,
     detail: (id: number) => ['lines', 'detail', id] as const,
+    metrics: () => ['lines', 'metrics'] as const,
+    metric: (id: number) => ['lines', 'metrics', id] as const,
     types: () => ['lines', 'types'] as const,
   },
   clients: {

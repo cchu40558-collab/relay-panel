@@ -31,7 +31,9 @@ func (a *LineController) initRouter(g *gin.RouterGroup) {
 	g.GET("/lines/", a.listLines)
 
 	lines := g.Group("/lines")
+	lines.GET("/metrics", a.listLineMetrics)
 	lines.GET("/:id", a.getLine)
+	lines.GET("/:id/metrics", a.getLineMetrics)
 	lines.POST("", a.createLine)
 	lines.POST("/prepare", a.prepareLine)
 	lines.POST("/:id/origin-certificate", a.uploadOriginCertificate)
@@ -105,6 +107,11 @@ func (a *LineController) listLines(c *gin.Context) {
 	jsonObj(c, lines, err)
 }
 
+func (a *LineController) listLineMetrics(c *gin.Context) {
+	metrics, err := a.lineService.ListLineMetrics()
+	jsonObj(c, metrics, err)
+}
+
 func (a *LineController) getLine(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -114,6 +121,17 @@ func (a *LineController) getLine(c *gin.Context) {
 
 	line, err := a.lineService.GetLine(id)
 	jsonObj(c, line, err)
+}
+
+func (a *LineController) getLineMetrics(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		pureJsonMsg(c, http.StatusOK, false, "线路 ID 不正确")
+		return
+	}
+
+	metrics, err := a.lineService.GetLineMetrics(id)
+	jsonObj(c, metrics, err)
 }
 
 func (a *LineController) createLine(c *gin.Context) {
@@ -165,7 +183,12 @@ func (a *LineController) checkLine(c *gin.Context) {
 		return
 	}
 
-	result, err := a.lineService.CheckLine(id)
+	var req struct {
+		InboundLatencyMs int64 `json:"inboundLatencyMs"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	result, err := a.lineService.CheckLineWithInboundLatency(id, req.InboundLatencyMs)
 	jsonMsgObj(c, "线路检测完成", result, err)
 }
 

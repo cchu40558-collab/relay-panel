@@ -323,6 +323,127 @@ body.line-column-resizing * {
   white-space: pre-wrap;
 }
 
+.line-speed-cell {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 92px;
+  line-height: 1.35;
+}
+
+.line-speed-up {
+  color: var(--ant-color-success);
+}
+
+.line-speed-down {
+  color: var(--ant-color-primary);
+}
+
+.line-detail-card {
+  max-width: 1240px;
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+  background: var(--ant-color-bg-container);
+}
+
+.line-detail-card .ant-typography {
+  margin-top: 0;
+}
+
+.line-detail-section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.line-chain-diagram {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding: 12px 0 4px;
+}
+
+.line-chain-step {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+
+.line-chain-step span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  max-width: 180px;
+  padding: 8px 12px;
+  border: 1px solid var(--ant-color-text);
+  border-radius: 4px;
+  color: var(--ant-color-text);
+  text-align: center;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.line-chain-step i {
+  display: block;
+  width: 34px;
+  height: 1px;
+  background: var(--ant-color-text);
+  position: relative;
+}
+
+.line-chain-step i::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -4px;
+  width: 8px;
+  height: 8px;
+  border-top: 1px solid var(--ant-color-text);
+  border-right: 1px solid var(--ant-color-text);
+  transform: rotate(45deg);
+}
+
+.line-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.line-monitor-card {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 6px;
+}
+
+.line-monitor-title {
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.line-monitor-card dl {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 10px 12px;
+  margin: 14px 0 0;
+}
+
+.line-monitor-card dt {
+  color: var(--ant-color-text-secondary);
+}
+
+.line-monitor-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .lines-page {
     padding: 16px;
@@ -347,6 +468,15 @@ body.line-column-resizing * {
 
   .line-type-grid {
     grid-template-columns: 1fr;
+  }
+
+  .line-monitor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .line-detail-section-heading {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .diagnostic-status-strip span {
