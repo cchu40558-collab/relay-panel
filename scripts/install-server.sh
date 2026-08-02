@@ -159,7 +159,12 @@ checkout_source() {
   log "Preparing source"
   if [[ -d "${SOURCE_DIR}/.git" ]]; then
     git -C "$SOURCE_DIR" fetch --all --tags
-    git -C "$SOURCE_DIR" checkout "$PANEL_REPO_REF"
+    if ! git -C "$SOURCE_DIR" checkout "$PANEL_REPO_REF"; then
+      log "Cleaning generated source files before retrying checkout"
+      git -C "$SOURCE_DIR" restore --source=HEAD -- frontend/public/openapi.json 2>/dev/null || \
+        git -C "$SOURCE_DIR" checkout -- frontend/public/openapi.json 2>/dev/null || true
+      git -C "$SOURCE_DIR" checkout "$PANEL_REPO_REF"
+    fi
     git -C "$SOURCE_DIR" pull --ff-only || true
     return
   fi
