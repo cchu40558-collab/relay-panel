@@ -2,9 +2,11 @@
 import type { Key, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Collapse, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
+import dayjs from 'dayjs';
+import type { Dayjs } from 'dayjs';
 import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { keys } from '@/api/queryKeys';
@@ -38,6 +40,10 @@ type LineProfile = {
   lastCheckAt: number;
   lastInboundLatencyMs?: number;
   lastOutboundLatencyMs?: number;
+  validFrom: number;
+  validUntil: number;
+  expiredAt: number;
+  manualReenableRequired: boolean;
 };
 
 type LineDetail = LineProfile & {
@@ -112,11 +118,12 @@ type LineDeleteResult = {
   message?: string;
 };
 
-type LineColumnKey = 'status' | 'name' | 'speed' | 'outboundLatency' | 'traffic' | 'actions';
+type LineColumnKey = 'status' | 'name' | 'validity' | 'speed' | 'outboundLatency' | 'traffic' | 'actions';
 
 const lineColumnDefaults: Record<LineColumnKey, number> = {
   status: 96,
   name: 220,
+  validity: 220,
   speed: 210,
   outboundLatency: 140,
   traffic: 150,
@@ -126,6 +133,7 @@ const lineColumnDefaults: Record<LineColumnKey, number> = {
 const lineColumnMinimums: Record<LineColumnKey, number> = {
   status: 80,
   name: 150,
+  validity: 180,
   speed: 150,
   outboundLatency: 110,
   traffic: 120,
@@ -151,7 +159,8 @@ type LineFormValues = {
   nginxApply?: boolean;
 	originHost?: string;
 	originPort?: number;
-	acmeEmail?: string;
+  acmeEmail?: string;
+  validityRange?: [Dayjs, Dayjs];
   realitySni?: string;
   realityShortId?: string;
 };
@@ -166,12 +175,15 @@ type LineSavePayload = {
   outboundPort: number;
   outboundUsername: string;
   outboundPassword: string;
+  validFrom?: number;
+  validUntil?: number;
   config: Record<string, string>;
 };
 
 type LineApplyResult = {
   line: LineDetail;
   errorMessage?: string;
+  scheduled?: boolean;
 };
 
 type LineFormSubmission = {
@@ -274,6 +286,24 @@ async function deleteLines(ids: number[]): Promise<LineDeleteResult[]> {
   return msg.obj;
 }
 
+async function updateLineValidity(id: number, validUntil: number): Promise<LineDetail> {
+  const msg = await HttpUtil.post<LineDetail>(`/panel/api/lines/${id}/validity`, { validUntil }, {
+    headers: { 'Content-Type': 'application/json' },
+    silent: true,
+  });
+  if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to extend line validity');
+  return msg.obj;
+}
+
+async function renewLine(id: number, validUntil: number): Promise<LineDetail> {
+  const msg = await HttpUtil.post<LineDetail>(`/panel/api/lines/${id}/renew`, { validUntil }, {
+    headers: { 'Content-Type': 'application/json' },
+    silent: true,
+  });
+  if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to renew line');
+  return msg.obj;
+}
+
 function lineTypeFromPath(pathname: string) {
   if (pathname.includes('/deploy/reality')) return 'reality_direct';
 	if (pathname.includes('/deploy/bunny')) return 'bunny_ws_tls';
@@ -283,6 +313,19 @@ function lineTypeFromPath(pathname: string) {
 function formatLineTime(value: number) {
   if (!value) return '尚未执行';
   return new Date(value * 1000).toLocaleString('zh-CN', { hour12: false });
+}
+
+function lineRequiresManualRenewal(line: LineProfile) {
+  return line.manualReenableRequired || line.status === 'expired' || line.status === 'expiring' || line.status === 'expiry_failed';
+}
+
+function formatLineValidity(line: LineProfile) {
+  if (lineRequiresManualRenewal(line)) return `已到期 ${formatLineTime(line.expiredAt || line.validUntil)}`;
+  if (!line.validUntil) return '长期有效';
+  const remaining = line.validUntil - Math.floor(Date.now() / 1000);
+  if (remaining <= 0) return `等待停用 ${formatLineTime(line.validUntil)}`;
+  const hours = Math.ceil(remaining / 3600);
+  return `${formatLineTime(line.validUntil)}（剩余 ${hours} 小时）`;
 }
 
 function LinePageShell({ children }: { children: ReactNode }) {
@@ -314,8 +357,8 @@ function defaultEntryPort(type: string) {
 }
 
 function statusTag(status: string) {
-  const color = status === 'active' ? 'green' : status === 'failed' || status === 'apply_failed' ? 'red' : status === 'warning' || status === 'pending_apply' || status === 'applying' || status === 'pending_check' ? 'gold' : 'default';
-  const text = status === 'active' ? '正常' : status === 'failed' || status === 'apply_failed' ? '异常' : status === 'warning' ? '警告' : status === 'applying' ? '应用中' : status === 'pending_check' ? '待检测' : status === 'pending_apply' ? '待应用' : '草稿';
+  const color = status === 'active' ? 'green' : status === 'expired' || status === 'expiry_failed' || status === 'failed' || status === 'apply_failed' ? 'red' : status === 'warning' || status === 'pending_apply' || status === 'applying' || status === 'pending_check' || status === 'scheduled' || status === 'expiring' ? 'gold' : 'default';
+  const text = status === 'active' ? '正常' : status === 'expired' ? '已过期' : status === 'expiry_failed' ? '过期清理异常' : status === 'scheduled' ? '待启用' : status === 'expiring' ? '停用中' : status === 'failed' || status === 'apply_failed' ? '异常' : status === 'warning' ? '警告' : status === 'applying' ? '应用中' : status === 'pending_check' ? '待检测' : status === 'pending_apply' ? '待应用' : '草稿';
   return <Tag color={color}>{text}</Tag>;
 }
 
@@ -342,8 +385,8 @@ function LineSpeedCell({ up, down }: { up?: number; down?: number }) {
 }
 
 function LineChainDiagram({ line }: { line: LineDetail }) {
-  const nodes = line.type === 'cloudflare_ws_tls'
-    ? ['手机/客户端', 'Cloudflare', 'Nginx', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站']
+  const nodes = line.type === 'cloudflare_ws_tls' || line.type === 'bunny_ws_tls'
+    ? ['手机/客户端', line.type === 'bunny_ws_tls' ? 'Bunny CDN' : 'Cloudflare', 'Nginx', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站']
     : ['手机/客户端', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站'];
   return (
     <section className="line-detail-card">
@@ -419,6 +462,9 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
   if (values.realitySni) config.realitySni = values.realitySni;
   if (values.realityShortId) config.realityShortId = values.realityShortId;
 
+  const validFrom = values.validityRange?.[0]?.unix();
+  const validUntil = values.validityRange?.[1]?.unix();
+
   return {
     type,
     name: values.name?.trim() || typeLabel(type),
@@ -429,6 +475,8 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
     outboundPort: values.outboundPort ?? 0,
     outboundUsername: values.outboundUsername?.trim() || '',
     outboundPassword: values.outboundPassword || '',
+    ...(validFrom ? { validFrom } : {}),
+    ...(validUntil ? { validUntil } : {}),
     config,
   };
 }
@@ -451,7 +499,7 @@ function detailToFormValues(line: LineDetail): LineFormValues {
     nginxApply: config.nginxApply === 'true',
 	originHost: config.originHost,
 	originPort: config.originPort ? Number(config.originPort) : undefined,
-	acmeEmail: config.acmeEmail,
+    acmeEmail: config.acmeEmail,
     realitySni: config.realitySni,
     realityShortId: config.realityShortId,
   };
@@ -583,12 +631,63 @@ function LineShareModal({
   );
 }
 
+function LineValidityModal({
+  line,
+  open,
+  saving,
+  onClose,
+  onSubmit,
+}: {
+  line: LineProfile | null;
+  open: boolean;
+  saving: boolean;
+  onClose: () => void;
+  onSubmit: (validUntil: number) => void;
+}) {
+  const [form] = Form.useForm<{ validUntil: Dayjs }>();
+  const renewing = Boolean(line && lineRequiresManualRenewal(line));
+
+  useEffect(() => {
+    if (!open) return;
+    form.setFieldsValue({
+      validUntil: line?.validUntil && line.validUntil > Math.floor(Date.now() / 1000)
+        ? dayjs(line.validUntil * 1000)
+        : dayjs().add(30, 'day'),
+    });
+  }, [form, line, open]);
+
+  return (
+    <Modal
+      title={renewing ? '续期并重新启用线路' : '延长线路有效期'}
+      open={open}
+      onCancel={onClose}
+      okText={renewing ? '续期并重新启用' : '保存有效期'}
+      cancelText="取消"
+      okButtonProps={{ danger: renewing }}
+      confirmLoading={saving}
+      onOk={() => void form.validateFields().then((values) => onSubmit(values.validUntil.unix()))}
+    >
+      <Form form={form} layout="vertical">
+        <Form.Item
+          label="新的结束时间"
+          name="validUntil"
+          rules={[{ required: true, message: '请选择结束时间' }]}
+        >
+          <DatePicker showTime style={{ width: '100%' }} disabledDate={(date) => date.endOf('day').isBefore(dayjs())} />
+        </Form.Item>
+        {renewing && <Alert type="warning" showIcon message="该线路已到期，确认后会重新写入 Xray 和 Nginx 配置，并恢复连接。" />}
+      </Form>
+    </Modal>
+  );
+}
+
 function LineEditor({
   type,
   selectedType,
   initialValues,
   submitText,
   saving,
+  showValidity,
   onSubmit,
 }: {
   type: string;
@@ -596,6 +695,7 @@ function LineEditor({
   initialValues?: LineFormValues;
   submitText: string;
   saving: boolean;
+  showValidity?: boolean;
   onSubmit: (submission: LineFormSubmission) => void;
 }) {
   const [form] = Form.useForm<LineFormValues>();
@@ -688,6 +788,11 @@ function LineEditor({
           <Form.Item label="住宅出口密码" name="outboundPassword">
             <Input.Password placeholder="详情页留空表示不修改" />
           </Form.Item>
+		  {showValidity && (
+			<Form.Item label="有效期（中国时间）" name="validityRange" className="line-form-grid-wide">
+			  <DatePicker.RangePicker showTime style={{ width: '100%' }} />
+			</Form.Item>
+		  )}
         </div>
 
         {type === 'cloudflare_ws_tls' && (
@@ -951,6 +1056,7 @@ export default function LinesPage() {
   const [shareData, setShareData] = useState<LineShareResponse | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [validityLine, setValidityLine] = useState<LineProfile | null>(null);
   const [selectedLineIds, setSelectedLineIds] = useState<Key[]>([]);
   const [columnWidths, setColumnWidths] = useState<Record<LineColumnKey, number>>(() => {
     try {
@@ -960,6 +1066,7 @@ export default function LinesPage() {
       return {
         status: Math.max(lineColumnMinimums.status, parsed.status ?? lineColumnDefaults.status),
         name: Math.max(lineColumnMinimums.name, parsed.name ?? lineColumnDefaults.name),
+        validity: Math.max(lineColumnMinimums.validity, parsed.validity ?? lineColumnDefaults.validity),
         speed: Math.max(lineColumnMinimums.speed, parsed.speed ?? lineColumnDefaults.speed),
         outboundLatency: Math.max(lineColumnMinimums.outboundLatency, parsed.outboundLatency ?? lineColumnDefaults.outboundLatency),
         traffic: Math.max(lineColumnMinimums.traffic, parsed.traffic ?? lineColumnDefaults.traffic),
@@ -1060,19 +1167,25 @@ export default function LinesPage() {
   );
 
   const createMutation = useMutation({
-    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission) => {
+    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission): Promise<LineApplyResult> => {
       const saved = await createLine(buildPayload(currentType, values));
       if (certificateFile && privateKeyFile) {
         await uploadOriginCertificate(saved.id, certificateFile, privateKeyFile);
       }
+      if (saved.status === 'scheduled') return { line: saved, scheduled: true };
       return applyLine(saved.id);
     },
-    onSuccess: async ({ line, errorMessage }) => {
+    onSuccess: async ({ line, errorMessage, scheduled }) => {
       await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
       queryClient.setQueryData(keys.lines.detail(line.id), line);
       if (errorMessage) {
         message.error(errorMessage);
         navigate(`/lines/${line.id}`);
+        return;
+      }
+      if (scheduled) {
+        message.success('线路已保存，将在开始时间自动启用');
+        navigate('/lines');
         return;
       }
       message.success('线路已保存并应用，等待检测');
@@ -1082,18 +1195,24 @@ export default function LinesPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission) => {
+    mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission): Promise<LineApplyResult> => {
       const saved = await updateLine(lineId, buildPayload(detailType, values));
       if (certificateFile && privateKeyFile) {
         await uploadOriginCertificate(saved.id, certificateFile, privateKeyFile);
       }
+      if (saved.status === 'scheduled') return { line: saved, scheduled: true };
       return applyLine(saved.id);
     },
-    onSuccess: async ({ line, errorMessage }) => {
+    onSuccess: async ({ line, errorMessage, scheduled }) => {
       await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
       queryClient.setQueryData(keys.lines.detail(line.id), line);
       if (errorMessage) {
         message.error(errorMessage);
+        return;
+      }
+      if (scheduled) {
+        message.success('待启用线路已更新，开始时间到达后自动部署');
+        navigate(`/lines/${line.id}`);
         return;
       }
       message.success('线路已保存并应用，等待检测');
@@ -1129,6 +1248,19 @@ export default function LinesPage() {
       message.success('线路已重新应用，等待检测');
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '线路应用失败'),
+  });
+
+  const validityMutation = useMutation({
+    mutationFn: async ({ line, validUntil }: { line: LineProfile; validUntil: number }) => (
+      lineRequiresManualRenewal(line) ? renewLine(line.id, validUntil) : updateLineValidity(line.id, validUntil)
+    ),
+    onSuccess: async (line, variables) => {
+      await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
+      queryClient.setQueryData(keys.lines.detail(line.id), line);
+      setValidityLine(null);
+      message.success(lineRequiresManualRenewal(variables.line) ? '线路已续期并重新启用' : '有效期已延长，现有连接未中断');
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '有效期更新失败'),
   });
 
   const allChecksMutation = useMutation({
@@ -1244,6 +1376,10 @@ export default function LinesPage() {
     shareMutation.mutate(id);
   };
 
+  const openValidity = (line: LineProfile) => {
+    setValidityLine(line);
+  };
+
   const columns: ColumnsType<LineProfile> = [
     {
       title: columnTitle('状态', 'status'),
@@ -1260,6 +1396,11 @@ export default function LinesPage() {
           {row.name || typeLabel(row.type)}
         </button>
       ),
+    },
+    {
+      title: columnTitle('有效期', 'validity'),
+      width: columnWidths.validity,
+      render: (_, row) => formatLineValidity(row),
     },
     {
       title: columnTitle('实时吞吐', 'speed'),
@@ -1284,11 +1425,10 @@ export default function LinesPage() {
       width: columnWidths.actions,
       render: (_, row) => (
         <Space>
-          <Button size="small" icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(row.id)}>
-            检测
-          </Button>
-          <Button size="small" icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(row.id)}>
-            分享
+          {!lineRequiresManualRenewal(row) && <Button size="small" icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(row.id)}>检测</Button>}
+          {!lineRequiresManualRenewal(row) && <Button size="small" icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(row.id)}>分享</Button>}
+          <Button size="small" danger={lineRequiresManualRenewal(row)} loading={validityMutation.isPending} onClick={() => openValidity(row)}>
+            {lineRequiresManualRenewal(row) ? '续期启用' : '延长有效期'}
           </Button>
           <Button size="small" onClick={() => navigate(`/lines/${row.id}`)}>
             详情
@@ -1298,7 +1438,7 @@ export default function LinesPage() {
             menu={{
               items: [
                 { key: 'details', label: '查看详情', onClick: () => navigate(`/lines/${row.id}`) },
-                { key: 'edit', label: '编辑', onClick: () => navigate(`/lines/${row.id}/edit`) },
+                ...(!lineRequiresManualRenewal(row) ? [{ key: 'edit', label: '编辑', onClick: () => navigate(`/lines/${row.id}/edit`) }] : []),
                 { type: 'divider' },
                 { key: 'delete', danger: true, icon: <DeleteOutlined />, label: '删除线路', onClick: () => confirmDeleteLine(row) },
               ],
@@ -1345,6 +1485,7 @@ export default function LinesPage() {
                 initialValues={detailToFormValues(lineDetail)}
                 submitText="保存并应用"
                 saving={updateMutation.isPending}
+                showValidity={false}
                 onSubmit={(submission) => updateMutation.mutate(submission)}
               />
             )}
@@ -1367,16 +1508,11 @@ export default function LinesPage() {
               <Typography.Text type="secondary">{lineDetail?.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : detailSelectedType.description}</Typography.Text>
             </div>
             <Space wrap>
-              <Button icon={<EditOutlined />} onClick={() => navigate(`/lines/${lineId}/edit`)}>编辑</Button>
-              <Button icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(lineId)}>
-                检测
-              </Button>
-              <Button icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(lineId)}>
-                分享
-              </Button>
-              <Button type="primary" icon={<SaveOutlined />} loading={applyMutation.isPending} onClick={() => applyMutation.mutate(lineId)}>
-                重新应用
-              </Button>
+              {lineDetail && <Button danger={lineRequiresManualRenewal(lineDetail)} loading={validityMutation.isPending} onClick={() => openValidity(lineDetail)}>{lineRequiresManualRenewal(lineDetail) ? '续期并重新启用' : '延长有效期'}</Button>}
+              {lineDetail && !lineRequiresManualRenewal(lineDetail) && <Button icon={<EditOutlined />} onClick={() => navigate(`/lines/${lineId}/edit`)}>编辑</Button>}
+              {lineDetail && !lineRequiresManualRenewal(lineDetail) && <Button icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(lineId)}>检测</Button>}
+              {lineDetail && !lineRequiresManualRenewal(lineDetail) && <Button icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(lineId)}>分享</Button>}
+              {lineDetail && !lineRequiresManualRenewal(lineDetail) && <Button type="primary" icon={<SaveOutlined />} loading={applyMutation.isPending} onClick={() => applyMutation.mutate(lineId)}>重新应用</Button>}
               <Button icon={<MoreOutlined />} onClick={() => setAdvancedOpen(true)} aria-label="更多线路操作" />
             </Space>
           </div>
@@ -1392,6 +1528,8 @@ export default function LinesPage() {
                 <Descriptions className="line-overview" bordered size="small" column={{ xs: 1, md: 4 }} items={[
                   { key: 'status', label: '当前状态', children: statusTag(lineDetail.status) },
                   { key: 'entry', label: '入口', children: lineDetail.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : '-' },
+				  { key: 'validFrom', label: '开始时间', children: lineDetail.validFrom ? formatLineTime(lineDetail.validFrom) : '立即生效' },
+				  { key: 'validUntil', label: '结束时间', children: lineDetail.validUntil ? formatLineTime(lineDetail.validUntil) : '长期有效' },
                   { key: 'traffic', label: '累计流量', children: SizeFormatter.sizeFormat(lineDetailMetrics?.totalTraffic) },
 				  { key: 'latency', label: '出站检测延迟', children: formatLatency(lineDetailMetrics?.outboundLatencyMs) },
                 ]} />
@@ -1412,6 +1550,7 @@ export default function LinesPage() {
           {lineDetail && <LinePlanPanel line={lineDetail} />}
         </Drawer>
         <LineShareModal open={shareOpen} data={shareData} onClose={() => setShareOpen(false)} />
+		<LineValidityModal line={validityLine} open={Boolean(validityLine)} saving={validityMutation.isPending} onClose={() => setValidityLine(null)} onSubmit={(validUntil) => validityLine && validityMutation.mutate({ line: validityLine, validUntil })} />
       </LinePageShell>
     );
   }
@@ -1437,6 +1576,7 @@ export default function LinesPage() {
           selectedType={selectedType}
           submitText="保存并应用"
           saving={createMutation.isPending}
+          showValidity
           onSubmit={(submission) => createMutation.mutate(submission)}
         />
       </main>
@@ -1484,6 +1624,7 @@ export default function LinesPage() {
         />
       </main>
       <LineShareModal open={shareOpen} data={shareData} onClose={() => setShareOpen(false)} />
+	  <LineValidityModal line={validityLine} open={Boolean(validityLine)} saving={validityMutation.isPending} onClose={() => setValidityLine(null)} onSubmit={(validUntil) => validityLine && validityMutation.mutate({ line: validityLine, validUntil })} />
     </LinePageShell>
   );
 }

@@ -56,7 +56,14 @@ type LineSaveRequest struct {
 	OutboundPort     int               `json:"outboundPort"`
 	OutboundUsername string            `json:"outboundUsername"`
 	OutboundPassword string            `json:"outboundPassword"`
+	ValidFrom        *int64            `json:"validFrom,omitempty"`
+	ValidUntil       *int64            `json:"validUntil,omitempty"`
 	Config           map[string]string `json:"config"`
+}
+
+type LineValidityRequest struct {
+	ValidFrom  *int64 `json:"validFrom,omitempty"`
+	ValidUntil *int64 `json:"validUntil,omitempty"`
 }
 
 type LineDetail struct {
@@ -241,6 +248,13 @@ func saturatingSum(a int64, b int64) int64 {
 }
 
 func (s *LineService) GetLine(id int) (*LineDetail, error) {
+	return s.getLine(id, true)
+}
+
+// getLine optionally persists legacy configuration defaults. Mutations that
+// promise to change only lifecycle metadata use false so their response cannot
+// alter the saved runtime configuration as a side effect.
+func (s *LineService) getLine(id int, persistNormalizedConfig bool) (*LineDetail, error) {
 	var line model.LineProfile
 	if err := database.GetDB().First(&line, id).Error; err != nil {
 		return nil, err
@@ -251,7 +265,7 @@ func (s *LineService) GetLine(id int) (*LineDetail, error) {
 		Config:      decodeLineConfig(line.ConfigJSON),
 	}
 	normalizedConfig := ensureLineConfigDefaults(line.Id, line.Type, detail.Config)
-	if encodeLineConfig(normalizedConfig) != line.ConfigJSON {
+	if persistNormalizedConfig && encodeLineConfig(normalizedConfig) != line.ConfigJSON {
 		detail.Config = normalizedConfig
 		detail.ConfigJSON = encodeLineConfig(normalizedConfig)
 		_ = database.GetDB().Model(&model.LineProfile{}).Where("id = ?", line.Id).Update("config_json", detail.ConfigJSON).Error
@@ -439,14 +453,20 @@ func (s *LineService) CreateLine(req LineSaveRequest) (*LineDetail, error) {
 
 	var createdID int
 	err = database.GetDB().Transaction(func(tx *gorm.DB) error {
+		validFrom, validUntil, err := normalizeLineValidity(normalized.ValidFrom, normalized.ValidUntil, time.Now())
+		if err != nil {
+			return err
+		}
 		line := &model.LineProfile{
 			UserId:      1,
 			Name:        normalized.Name,
 			Type:        normalized.Type,
-			Status:      "pending_apply",
+			Status:      lineInitialStatus(validFrom, time.Now()),
 			EntryHost:   normalized.EntryHost,
 			EntryPort:   normalized.EntryPort,
 			ChainText:   buildLineChainText(normalized.Type, normalized.OutboundType),
+			ValidFrom:   validFrom,
+			ValidUntil:  validUntil,
 			ConfigJSON:  encodeLineConfig(normalized.Config),
 			OutboundTag: "",
 		}
@@ -497,16 +517,38 @@ func (s *LineService) UpdateLine(id int, req LineSaveRequest) (*LineDetail, erro
 		if err := tx.First(&line, id).Error; err != nil {
 			return err
 		}
+		if line.ManualReenableRequired {
+			return fmt.Errorf("line has expired; use renew and re-enable")
+		}
+		validFrom := line.ValidFrom
+		validUntil := line.ValidUntil
+		if req.ValidFrom != nil || req.ValidUntil != nil {
+			requestedFrom := req.ValidFrom
+			requestedUntil := req.ValidUntil
+			if requestedFrom == nil {
+				requestedFrom = &validFrom
+			}
+			if requestedUntil == nil {
+				requestedUntil = &validUntil
+			}
+			var validityErr error
+			validFrom, validUntil, validityErr = normalizeLineValidity(requestedFrom, requestedUntil, time.Now())
+			if validityErr != nil {
+				return validityErr
+			}
+		}
 		normalized.Config = mergePreservedLineConfig(decodeLineConfig(line.ConfigJSON), normalized.Config)
 		normalized.Config = ensureLineConfigDefaults(line.Id, normalized.Type, normalized.Config)
 
 		updates := map[string]any{
 			"name":        normalized.Name,
 			"type":        normalized.Type,
-			"status":      "pending_apply",
+			"status":      lineInitialStatus(validFrom, time.Now()),
 			"entry_host":  normalized.EntryHost,
 			"entry_port":  normalized.EntryPort,
 			"chain_text":  buildLineChainText(normalized.Type, normalized.OutboundType),
+			"valid_from":  validFrom,
+			"valid_until": validUntil,
 			"config_json": encodeLineConfig(normalized.Config),
 		}
 		if err := tx.Model(&line).Updates(updates).Error; err != nil {
@@ -566,8 +608,13 @@ func (s *LineService) UpdateLine(id int, req LineSaveRequest) (*LineDetail, erro
 
 func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 	var lineForPreflight model.LineProfile
-	if err := database.GetDB().Select("id", "type").First(&lineForPreflight, id).Error; err != nil {
+	if err := database.GetDB().First(&lineForPreflight, id).Error; err != nil {
 		return s.finishLineApplyError(id, err)
+	}
+	if err := validateLineCanApply(lineForPreflight, time.Now()); err != nil {
+		// Lifecycle rejections are expected user actions. In particular, a
+		// scheduled line must remain scheduled so the validity job can start it.
+		return nil, err
 	}
 	var realityPreflight *realityApplyPreflight
 	if lineForPreflight.Type == LineTypeReality {
@@ -589,6 +636,9 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		var line model.LineProfile
 		if err := tx.First(&line, id).Error; err != nil {
+			return err
+		}
+		if err := validateLineCanApply(line, time.Now()); err != nil {
 			return err
 		}
 		if realityPreflight != nil && (line.ConfigJSON != realityPreflight.sourceConfigJSON || line.UpdatedAt != realityPreflight.sourceLineUpdatedAt) {
@@ -778,6 +828,9 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 func (s *LineService) checkLine(id int, persist bool) (*LineCheckResponse, error) {
 	line, outbound, config, inbound, err := loadLineRuntime(id)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateLineCanApply(line, time.Now()); err != nil {
 		return nil, err
 	}
 
@@ -1001,6 +1054,9 @@ func testLineOutboundLatency(line model.LineProfile, outbound *model.LineOutboun
 func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {
 	line, _, config, inbound, err := loadLineRuntime(id)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateLineCanApply(line, time.Now()); err != nil {
 		return nil, err
 	}
 	if inbound == nil {

@@ -3,23 +3,27 @@ package model
 // LineProfile stores the simplified line-management view built on top of
 // 3x-ui's native inbound and Xray configuration model.
 type LineProfile struct {
-	Id                    int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	UserId                int    `json:"userId" gorm:"index"`
-	Name                  string `json:"name"`
-	Type                  string `json:"type" gorm:"index"`
-	Status                string `json:"status" gorm:"index;default:draft"`
-	InboundId             *int   `json:"inboundId,omitempty" gorm:"index"`
-	OutboundTag           string `json:"outboundTag"`
-	EntryHost             string `json:"entryHost"`
-	EntryPort             int    `json:"entryPort"`
-	ChainText             string `json:"chainText"`
-	ConfigJSON            string `json:"-"` // Internal configuration can include a Reality private key.
-	LastCheckAt           int64  `json:"lastCheckAt" gorm:"default:0"`
-	LastInboundLatencyMs  int64  `json:"lastInboundLatencyMs" gorm:"default:0"`
-	LastOutboundLatencyMs int64  `json:"lastOutboundLatencyMs" gorm:"default:0"`
-	LastError             string `json:"lastError"`
-	CreatedAt             int64  `json:"createdAt" gorm:"autoCreateTime"`
-	UpdatedAt             int64  `json:"updatedAt" gorm:"autoUpdateTime"`
+	Id                     int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId                 int    `json:"userId" gorm:"index"`
+	Name                   string `json:"name"`
+	Type                   string `json:"type" gorm:"index"`
+	Status                 string `json:"status" gorm:"index;default:draft"`
+	InboundId              *int   `json:"inboundId,omitempty" gorm:"index"`
+	OutboundTag            string `json:"outboundTag"`
+	EntryHost              string `json:"entryHost"`
+	EntryPort              int    `json:"entryPort"`
+	ChainText              string `json:"chainText"`
+	ValidFrom              int64  `json:"validFrom" gorm:"index;default:0"`
+	ValidUntil             int64  `json:"validUntil" gorm:"index;default:0"`
+	ExpiredAt              int64  `json:"expiredAt" gorm:"default:0"`
+	ManualReenableRequired bool   `json:"manualReenableRequired" gorm:"default:false"`
+	ConfigJSON             string `json:"-"` // Internal configuration can include a Reality private key.
+	LastCheckAt            int64  `json:"lastCheckAt" gorm:"default:0"`
+	LastInboundLatencyMs   int64  `json:"lastInboundLatencyMs" gorm:"default:0"`
+	LastOutboundLatencyMs  int64  `json:"lastOutboundLatencyMs" gorm:"default:0"`
+	LastError              string `json:"lastError"`
+	CreatedAt              int64  `json:"createdAt" gorm:"autoCreateTime"`
+	UpdatedAt              int64  `json:"updatedAt" gorm:"autoUpdateTime"`
 }
 
 // LineOutbound stores the residential landing proxy attached to a line.

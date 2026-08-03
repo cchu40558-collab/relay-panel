@@ -38,6 +38,8 @@ func (a *LineController) initRouter(g *gin.RouterGroup) {
 	lines.POST("/prepare", a.prepareLine)
 	lines.POST("/:id/origin-certificate", a.uploadOriginCertificate)
 	lines.POST("/:id/apply", a.applyLine)
+	lines.POST("/:id/validity", a.updateLineValidity)
+	lines.POST("/:id/renew", a.renewLine)
 	lines.POST("/:id/check", a.checkLine)
 	lines.POST("/:id/delete", a.deleteLine)
 	lines.POST("/batch-delete", a.batchDeleteLines)
@@ -174,6 +176,43 @@ func (a *LineController) applyLine(c *gin.Context) {
 		a.xrayService.SetToNeedRestart()
 	}
 	jsonMsgObj(c, "线路配置已写入，Xray 将自动重载", line, err)
+}
+
+func (a *LineController) updateLineValidity(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+	var req service.LineValidityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonMsg(c, "Update line validity", err)
+		return
+	}
+	line, err := a.lineService.UpdateLineValidity(id, req)
+	jsonMsgObj(c, "Line validity updated", line, err)
+}
+
+func (a *LineController) renewLine(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+	var req service.LineValidityRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		jsonMsg(c, "Renew line", err)
+		return
+	}
+	if _, err := a.lineService.RenewLine(id, req); err != nil {
+		jsonMsgObj(c, "Renew line", nil, err)
+		return
+	}
+	line, err := a.lineService.ApplyLine(id)
+	if err == nil {
+		err = a.xrayService.RestartXray(false)
+	}
+	jsonMsgObj(c, "Line renewed and re-enabled", line, err)
 }
 
 func (a *LineController) checkLine(c *gin.Context) {
