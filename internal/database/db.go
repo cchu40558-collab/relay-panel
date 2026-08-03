@@ -87,6 +87,7 @@ func allModels() []any {
 		&model.LineOutbound{},
 		&model.LineApplyLog{},
 		&model.LineCheckResult{},
+		&model.LineSubscription{},
 	}
 }
 

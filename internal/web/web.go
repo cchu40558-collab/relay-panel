@@ -160,7 +160,15 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	engine := gin.Default()
+	engine := gin.New()
+	engine.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		Skip: func(c *gin.Context) bool {
+			// The subscription path contains a bearer-like token. Nginx also has
+			// access_log disabled for it, so neither layer persists that token.
+			return strings.Contains(c.Request.URL.Path, "/rp/sub/")
+		},
+	}))
+	engine.Use(gin.Recovery())
 	directHTTPS := s.isDirectHTTPSConfigured()
 	sendHSTS := directHTTPS && !config.IsSkipHSTS()
 	engine.Use(middleware.SecurityHeadersMiddleware(sendHSTS))
@@ -248,6 +256,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.panel = controller.NewXUIController(g)
 	s.api = controller.NewAPIController(g)
+	controller.NewLineSubscriptionController(g)
 
 	// Initialize WebSocket hub
 	s.wsHub = websocket.NewHub()

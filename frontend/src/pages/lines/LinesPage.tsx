@@ -2,16 +2,16 @@
 import type { Key, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tabs, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
 import dayjs from 'dayjs';
 import type { Dayjs } from 'dayjs';
-import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, SaveOutlined } from '@ant-design/icons';
+import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, RedoOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { keys } from '@/api/queryKeys';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { ClipboardManager, HttpUtil, SizeFormatter } from '@/utils';
+import { ClipboardManager, FileManager, HttpUtil, SizeFormatter } from '@/utils';
 import AppSidebar from '@/layouts/AppSidebar';
 import './LinesPage.css';
 
@@ -122,6 +122,14 @@ type LineShareResponse = {
     label: string;
     uri: string;
   }>;
+  clashSubscription?: LineClashSubscriptionShare;
+  clashSubscriptionError?: string;
+};
+
+type LineClashSubscriptionShare = {
+  url: string;
+  createdAt: number;
+  rotatedAt: number;
 };
 
 type LineDeleteResult = {
@@ -134,26 +142,26 @@ type LineDeleteResult = {
 type LineColumnKey = 'status' | 'name' | 'validity' | 'speed' | 'outboundLatency' | 'traffic' | 'actions';
 
 const lineColumnDefaults: Record<LineColumnKey, number> = {
-  status: 96,
-  name: 220,
-  validity: 236,
-  speed: 150,
-  outboundLatency: 115,
-  traffic: 120,
-  actions: 190,
+  status: 72,
+  name: 136,
+  validity: 154,
+  speed: 100,
+  outboundLatency: 92,
+  traffic: 96,
+  actions: 150,
 };
 
 const lineColumnMinimums: Record<LineColumnKey, number> = {
-  status: 80,
-  name: 150,
-  validity: 196,
-  speed: 112,
-  outboundLatency: 92,
-  traffic: 96,
-  actions: 132,
+  status: 62,
+  name: 96,
+  validity: 128,
+  speed: 82,
+  outboundLatency: 78,
+  traffic: 80,
+  actions: 108,
 };
 
-const lineColumnWidthsStorageKey = 'line-table-column-widths-v3';
+const lineColumnWidthsStorageKey = 'line-table-column-widths-v4';
 
 type LineFormValues = {
   name?: string;
@@ -310,6 +318,25 @@ async function deleteLines(ids: number[]): Promise<LineDeleteResult[]> {
   return msg.obj;
 }
 
+async function resetLineClashSubscription(id: number): Promise<LineClashSubscriptionShare> {
+  const msg = await HttpUtil.post<LineClashSubscriptionShare>(`/panel/api/lines/${id}/clash-subscription/reset`, {}, {
+    headers: { 'Content-Type': 'application/json' },
+    silent: true,
+  });
+  if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to reset Clash subscription');
+  return msg.obj;
+}
+
+async function downloadLineClashSubscription(id: number): Promise<void> {
+  const basePath = window.X_UI_BASE_PATH || '';
+  const response = await fetch(`${basePath}/panel/api/lines/${id}/clash-subscription/yaml`, {
+    credentials: 'same-origin',
+    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+  });
+  if (!response.ok) throw new Error('下载 YAML 失败');
+  FileManager.downloadTextFile(await response.text(), `relay-panel-line-${id}.yaml`, { type: 'application/yaml;charset=utf-8' });
+}
+
 async function updateLineValidity(id: number, validUntil: number): Promise<LineDetail> {
   const msg = await HttpUtil.post<LineDetail>(`/panel/api/lines/${id}/validity`, { validUntil }, {
     headers: { 'Content-Type': 'application/json' },
@@ -345,8 +372,9 @@ function lineRequiresManualRenewal(line: LineProfile) {
 
 function formatLineValidity(line: LineProfile) {
   const start = line.validFrom || line.createdAt;
-  if (!line.validUntil) return `起：${formatLineTime(start)}`;
-  return `起：${formatLineTime(start)}\n止：${formatLineTime(line.validUntil)}`;
+  const date = (value: number) => dayjs(value * 1000).format('YYYY-MM-DD');
+  if (!line.validUntil) return `起：${date(start)}`;
+  return `起：${date(start)}\n止：${date(line.validUntil)}`;
 }
 
 function LinePageShell({ children }: { children: ReactNode }) {
@@ -595,13 +623,20 @@ function LinePlanPanel({ line }: { line: LineDetail }) {
 function LineShareModal({
   open,
   data,
+  lineId,
+  resetting,
   onClose,
+  onResetSubscription,
 }: {
   open: boolean;
   data: LineShareResponse | null;
+  lineId: number | null;
+  resetting: boolean;
   onClose: () => void;
+  onResetSubscription: () => Promise<unknown>;
 }) {
   const firstLink = data?.links?.[0]?.uri ?? '';
+  const subscriptionURL = data?.clashSubscription?.url ?? '';
   const qrCodeRef = useRef<HTMLDivElement>(null);
 
   const copyQRCodeImage = async () => {
@@ -629,30 +664,95 @@ function LineShareModal({
 
   return (
     <Modal title="分享线路" open={open} onCancel={onClose} footer={null} width={560}>
-      {firstLink ? (
-        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-          <div className="line-share-qr" ref={qrCodeRef}>
-            <QRCode value={firstLink} size={220} type="canvas" bordered />
-            <Button icon={<CopyOutlined />} onClick={() => void copyQRCodeImage()}>
-              复制二维码图片
-            </Button>
-          </div>
-          {data?.links.map((link) => (
-            <div key={link.uri}>
-              <Typography.Text strong>{link.label}</Typography.Text>
-              <Input.TextArea value={link.uri} autoSize={{ minRows: 3, maxRows: 5 }} readOnly />
-              <Button
-                icon={<CopyOutlined />}
-                onClick={async () => {
-                  const ok = await ClipboardManager.copyText(link.uri);
-                  message[ok ? 'success' : 'error'](ok ? '已复制' : '复制失败');
-                }}
-              >
-                复制链接
-              </Button>
-            </div>
-          ))}
-        </Space>
+      {data && firstLink ? (
+        <Tabs
+          items={[
+            {
+              key: 'vless',
+              label: 'VLESS 链接',
+              children: (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <div className="line-share-qr" ref={qrCodeRef}>
+                    <QRCode value={firstLink} size={220} type="canvas" bordered />
+                    <Button icon={<CopyOutlined />} onClick={() => void copyQRCodeImage()}>
+                      复制二维码图片
+                    </Button>
+                  </div>
+                  {data.links.map((link) => (
+                    <div key={link.uri}>
+                      <Typography.Text strong>{link.label}</Typography.Text>
+                      <Input.TextArea value={link.uri} autoSize={{ minRows: 3, maxRows: 5 }} readOnly />
+                      <Button
+                        icon={<CopyOutlined />}
+                        onClick={async () => {
+                          const ok = await ClipboardManager.copyText(link.uri);
+                          message[ok ? 'success' : 'error'](ok ? '已复制' : '复制失败');
+                        }}
+                      >
+                        复制链接
+                      </Button>
+                    </div>
+                  ))}
+                </Space>
+              ),
+            },
+            {
+              key: 'clash',
+              label: 'Clash 订阅',
+              children: subscriptionURL ? (
+                <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                  <div className="line-share-qr" ref={qrCodeRef}>
+                    <QRCode value={subscriptionURL} size={220} type="canvas" bordered />
+                    <Button icon={<CopyOutlined />} onClick={() => void copyQRCodeImage()}>
+                      复制二维码图片
+                    </Button>
+                  </div>
+                  <Typography.Text strong>订阅地址</Typography.Text>
+                  <Input.TextArea value={subscriptionURL} autoSize={{ minRows: 3, maxRows: 5 }} readOnly />
+                  <Space wrap>
+                    <Button
+                      icon={<CopyOutlined />}
+                      onClick={async () => {
+                        const ok = await ClipboardManager.copyText(subscriptionURL);
+                        message[ok ? 'success' : 'error'](ok ? '已复制订阅地址' : '复制失败');
+                      }}
+                    >
+                      复制订阅地址
+                    </Button>
+                    <Button
+                      icon={<DownloadOutlined />}
+                      onClick={() => {
+                        if (!lineId) return;
+                        void downloadLineClashSubscription(lineId).catch((error) => message.error(error instanceof Error ? error.message : '下载 YAML 失败'));
+                      }}
+                    >
+                      下载 YAML
+                    </Button>
+                    <Button
+                      danger
+                      icon={<RedoOutlined />}
+                      loading={resetting}
+                      onClick={() => {
+                        Modal.confirm({
+                          title: '重置 Clash 订阅地址？',
+                          content: '旧订阅地址和旧订阅二维码将立即失效；已经下载的 YAML 与 VLESS 链接不受影响。',
+                          okText: '重置',
+                          okButtonProps: { danger: true },
+                          cancelText: '取消',
+                          onOk: onResetSubscription,
+                        });
+                      }}
+                    >
+                      重置订阅地址
+                    </Button>
+                  </Space>
+                </Space>
+              ) : (
+                <Alert type="warning" showIcon message="Clash 订阅暂不可用" description={data.clashSubscriptionError || '请先完成 Cloudflare 主线路部署。'} />
+              ),
+            },
+          ]}
+        />
       ) : (
         <Empty description="暂无分享链接" />
       )}
@@ -948,12 +1048,6 @@ function LineTypePicker({ onSelect }: { onSelect: (type: string) => void }) {
       chain: ['用户', 'Cloudflare', 'Nginx -> Xray', '住宅出口'],
       description: '通过 Cloudflare 橙云接入，VPS 由 Nginx 转发到本地 Xray。',
     },
-	{
-		type: 'bunny_ws_tls',
-		name: 'Bunny CDN WS',
-		chain: ['用户', 'Bunny CDN', 'Nginx -> Xray', '住宅出口'],
-		description: '通过 Bunny CDN 接入，自动申请源站证书并由 Nginx 转发到本地 Xray。',
-	},
     {
       type: 'reality_direct',
       name: 'Reality 直连',
@@ -1094,6 +1188,7 @@ export default function LinesPage() {
   const queryClient = useQueryClient();
   const [shareData, setShareData] = useState<LineShareResponse | null>(null);
   const [shareOpen, setShareOpen] = useState(false);
+  const [shareLineId, setShareLineId] = useState<number | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [validityLine, setValidityLine] = useState<LineProfile | null>(null);
   const [selectedLineIds, setSelectedLineIds] = useState<Key[]>([]);
@@ -1135,6 +1230,7 @@ export default function LinesPage() {
     queryKey: keys.lines.list(),
     queryFn: fetchLines,
   });
+  const visibleLines = useMemo(() => lines.filter((line) => line.type !== 'bunny_ws_tls'), [lines]);
   const { data: lineMetrics = [] } = useQuery({
     queryKey: keys.lines.metrics(),
     queryFn: fetchLineMetrics,
@@ -1314,6 +1410,19 @@ export default function LinesPage() {
     onError: (error) => message.error(error instanceof Error ? error.message : '生成分享链接失败'),
   });
 
+  const resetClashSubscriptionMutation = useMutation({
+    mutationFn: resetLineClashSubscription,
+    onSuccess: (result) => {
+      setShareData((current) => current ? {
+        ...current,
+        clashSubscription: result,
+        clashSubscriptionError: undefined,
+      } : current);
+      message.success('旧订阅地址已失效，新的订阅地址已生成');
+    },
+    onError: (error) => message.error(error instanceof Error ? error.message : '重置订阅地址失败'),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: deleteLine,
     onSuccess: async (result) => {
@@ -1349,7 +1458,7 @@ export default function LinesPage() {
     document.body.classList.add('line-column-resizing');
 
     const onMove = (moveEvent: PointerEvent) => {
-      const width = Math.min(1100, Math.max(lineColumnMinimums[key], startWidth + moveEvent.clientX - startX));
+      const width = Math.min(1600, Math.max(lineColumnMinimums[key], startWidth + moveEvent.clientX - startX));
       setColumnWidths((current) => ({ ...current, [key]: width }));
     };
     const onEnd = () => {
@@ -1404,6 +1513,7 @@ export default function LinesPage() {
   };
 
   const openShare = (id: number) => {
+    setShareLineId(id);
     shareMutation.mutate(id);
   };
 
@@ -1455,7 +1565,7 @@ export default function LinesPage() {
       title: columnTitle('操作', 'actions'),
       width: columnWidths.actions,
       render: (_, row) => (
-        <Space>
+        <Space wrap size={[4, 4]}>
           {!lineRequiresManualRenewal(row) && <Button size="small" icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(row.id)}>检测</Button>}
           {!lineRequiresManualRenewal(row) && <Button size="small" icon={<QrcodeOutlined />} loading={shareMutation.isPending} onClick={() => openShare(row.id)}>分享</Button>}
           <Button size="small" danger={lineRequiresManualRenewal(row)} loading={validityMutation.isPending} onClick={() => openValidity(row)}>
@@ -1520,7 +1630,14 @@ export default function LinesPage() {
               />
             )}
           </main>
-          <LineShareModal open={shareOpen} data={shareData} onClose={() => setShareOpen(false)} />
+          <LineShareModal
+            open={shareOpen}
+            data={shareData}
+            lineId={shareLineId}
+            resetting={resetClashSubscriptionMutation.isPending}
+            onClose={() => setShareOpen(false)}
+            onResetSubscription={() => shareLineId ? resetClashSubscriptionMutation.mutateAsync(shareLineId) : Promise.reject(new Error('未选择线路'))}
+          />
         </LinePageShell>
       );
     }
@@ -1561,7 +1678,14 @@ export default function LinesPage() {
         <Drawer title="高级部署信息" open={advancedOpen} onClose={() => setAdvancedOpen(false)} width={720}>
           {lineDetail && <LinePlanPanel line={lineDetail} />}
         </Drawer>
-        <LineShareModal open={shareOpen} data={shareData} onClose={() => setShareOpen(false)} />
+		<LineShareModal
+			open={shareOpen}
+			data={shareData}
+			lineId={shareLineId}
+			resetting={resetClashSubscriptionMutation.isPending}
+			onClose={() => setShareOpen(false)}
+			onResetSubscription={() => shareLineId ? resetClashSubscriptionMutation.mutateAsync(shareLineId) : Promise.reject(new Error('未选择线路'))}
+		/>
 		<LineValidityModal line={validityLine} open={Boolean(validityLine)} saving={validityMutation.isPending} onClose={() => setValidityLine(null)} onSubmit={(validUntil) => validityLine && validityMutation.mutate({ line: validityLine, validUntil })} />
       </LinePageShell>
     );
@@ -1623,7 +1747,7 @@ export default function LinesPage() {
         <Table
           rowKey="id"
           columns={columns}
-          dataSource={lines}
+          dataSource={visibleLines}
           loading={isLoading}
           pagination={false}
           tableLayout="fixed"
@@ -1635,7 +1759,14 @@ export default function LinesPage() {
           locale={{ emptyText: <Empty description="暂无线路" /> }}
         />
       </main>
-      <LineShareModal open={shareOpen} data={shareData} onClose={() => setShareOpen(false)} />
+		<LineShareModal
+			open={shareOpen}
+			data={shareData}
+			lineId={shareLineId}
+			resetting={resetClashSubscriptionMutation.isPending}
+			onClose={() => setShareOpen(false)}
+			onResetSubscription={() => shareLineId ? resetClashSubscriptionMutation.mutateAsync(shareLineId) : Promise.reject(new Error('未选择线路'))}
+		/>
 	  <LineValidityModal line={validityLine} open={Boolean(validityLine)} saving={validityMutation.isPending} onClose={() => setValidityLine(null)} onSubmit={(validUntil) => validityLine && validityMutation.mutate({ line: validityLine, validUntil })} />
     </LinePageShell>
   );

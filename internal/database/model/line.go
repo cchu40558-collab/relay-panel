@@ -63,3 +63,16 @@ type LineCheckResult struct {
 	ItemsJSON string `json:"itemsJson"`
 	CreatedAt int64  `json:"createdAt" gorm:"autoCreateTime"`
 }
+
+// LineSubscription stores the opaque token used to fetch a managed line's
+// Mihomo configuration. The plaintext token is encrypted at rest and is never
+// included in normal line API responses.
+type LineSubscription struct {
+	Id              int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	LineId          int    `json:"lineId" gorm:"uniqueIndex"`
+	TokenHash       string `json:"-" gorm:"uniqueIndex;size:64"`
+	TokenCiphertext string `json:"-"`
+	CreatedAt       int64  `json:"createdAt" gorm:"autoCreateTime"`
+	RotatedAt       int64  `json:"rotatedAt" gorm:"default:0"`
+	UpdatedAt       int64  `json:"updatedAt" gorm:"autoUpdateTime"`
+}

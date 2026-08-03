@@ -134,7 +134,9 @@ type LineDeleteResult struct {
 }
 
 type LineShareResponse struct {
-	Links []LineShareLink `json:"links"`
+	Links                  []LineShareLink              `json:"links"`
+	ClashSubscription      *LineClashSubscriptionShare `json:"clashSubscription,omitempty"`
+	ClashSubscriptionError string                       `json:"clashSubscriptionError,omitempty"`
 }
 
 type LineShareLink struct {
@@ -806,6 +808,9 @@ func (s *LineService) DeleteLine(id int) (*LineDeleteResult, error) {
 		if err := tx.Where("line_id = ?", line.Id).Delete(&model.LineApplyLog{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("line_id = ?", line.Id).Delete(&model.LineSubscription{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("line_id = ?", line.Id).Delete(&model.LineOutbound{}).Error; err != nil {
 			return err
 		}
@@ -1114,12 +1119,21 @@ func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {
 	default:
 		return nil, fmt.Errorf("share link for this line type is not ready yet")
 	}
-	return &LineShareResponse{
+	response := &LineShareResponse{
 		Links: []LineShareLink{{
 			Label: label,
 			URI:   link,
 		}},
-	}, nil
+	}
+	// Raw VLESS sharing stays available when no Cloudflare subscription host is
+	// ready yet, so an incomplete CDN setup cannot block the existing workflow.
+	clashSubscription, clashErr := s.GetLineClashSubscriptionShare(id)
+	if clashErr != nil {
+		response.ClashSubscriptionError = clashErr.Error()
+	} else {
+		response.ClashSubscription = clashSubscription
+	}
+	return response, nil
 }
 
 type lineApplyFailure struct {
@@ -2678,6 +2692,10 @@ func buildNginxPlan(line model.LineProfile, config map[string]string) string {
 	if certFile != "" && keyFile != "" {
 		tlsConfig = fmt.Sprintf("    ssl_certificate %s;\n    ssl_certificate_key %s;\n    ssl_protocols TLSv1.2 TLSv1.3;", certFile, keyFile)
 	}
+	subscriptionLocation := ""
+	if line.Type == LineTypeCloudflare {
+		subscriptionLocation = "\n\n" + buildLineSubscriptionNginxLocation()
+	}
 	return fmt.Sprintf(`server {
     listen %d ssl http2;
     server_name %s;
@@ -2690,8 +2708,8 @@ func buildNginxPlan(line model.LineProfile, config map[string]string) string {
         proxy_set_header Connection "upgrade";
         proxy_set_header Host $host;
         proxy_pass http://127.0.0.1:%s;
-    }
-}`, nginxListenPort(line, config), host, tlsConfig, config["wsPath"], config["localXrayPort"])
+    }%s
+}`, nginxListenPort(line, config), host, tlsConfig, config["wsPath"], config["localXrayPort"], subscriptionLocation)
 }
 
 func defaultNginxConfigPath(lineID int) string {

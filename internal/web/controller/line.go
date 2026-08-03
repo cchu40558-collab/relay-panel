@@ -45,6 +45,9 @@ func (a *LineController) initRouter(g *gin.RouterGroup) {
 	lines.POST("/:id/delete", a.deleteLine)
 	lines.POST("/batch-delete", a.batchDeleteLines)
 	lines.GET("/:id/share", a.shareLine)
+	lines.GET("/:id/clash-subscription", a.getClashSubscription)
+	lines.GET("/:id/clash-subscription/yaml", a.downloadClashSubscription)
+	lines.POST("/:id/clash-subscription/reset", a.resetClashSubscription)
 	lines.POST("/:id", a.updateLine)
 }
 
@@ -255,6 +258,44 @@ func (a *LineController) shareLine(c *gin.Context) {
 
 	share, err := a.lineService.GetLineShare(id)
 	jsonMsgObj(c, "分享链接已生成", share, err)
+}
+
+func (a *LineController) getClashSubscription(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+	share, err := a.lineService.GetLineClashSubscriptionShare(id)
+	jsonMsgObj(c, "Clash subscription ready", share, err)
+}
+
+func (a *LineController) resetClashSubscription(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+	share, err := a.lineService.ResetLineClashSubscription(id)
+	jsonMsgObj(c, "Clash subscription reset", share, err)
+}
+
+func (a *LineController) downloadClashSubscription(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		pureJsonMsg(c, http.StatusOK, false, "Invalid line ID")
+		return
+	}
+	body, filename, err := a.lineService.GetLineClashSubscriptionYAML(id)
+	if err != nil {
+		jsonMsg(c, "Download Clash subscription", err)
+		return
+	}
+	c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+	c.Header("Pragma", "no-cache")
+	c.Header("Expires", "0")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+	c.Data(http.StatusOK, "application/yaml; charset=utf-8", body)
 }
 
 func (a *LineController) deleteLine(c *gin.Context) {

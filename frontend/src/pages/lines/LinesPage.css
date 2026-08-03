@@ -62,9 +62,9 @@
   top: 5px;
   right: 7px;
   bottom: 5px;
-  width: 2px;
-  background: var(--ant-color-border);
-  opacity: 0.9;
+  width: 1px;
+  background: var(--ant-color-text-quaternary);
+  opacity: 1;
   content: '';
 }
 
@@ -254,11 +254,17 @@ body.line-column-resizing * {
 }
 
 .line-link-button {
+  display: block;
+  width: 100%;
   padding: 0;
+  overflow: hidden;
   border: 0;
   background: transparent;
   color: var(--ant-color-primary);
   cursor: pointer;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .line-link-button:hover {
@@ -326,11 +332,17 @@ body.line-column-resizing * {
 }
 
 .line-speed-cell {
-  display: inline-flex;
+  display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 92px;
+  max-width: 100%;
   line-height: 1.35;
+}
+
+.line-speed-cell span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .line-validity-cell {
