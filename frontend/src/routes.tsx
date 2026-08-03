@@ -20,6 +20,7 @@ const routes: RouteObject[] = [
       { path: 'lines/:id/edit', element: withSuspense(<LinesPage />) },
       { path: 'lines/deploy', element: withSuspense(<LinesPage />) },
       { path: 'lines/deploy/cloudflare', element: withSuspense(<LinesPage />) },
+		{ path: 'lines/deploy/bunny', element: withSuspense(<LinesPage />) },
       { path: 'lines/deploy/reality', element: withSuspense(<LinesPage />) },
       { path: 'diagnostics', element: withSuspense(<LinesPage />) },
       { path: '*', element: <Navigate to="/lines" replace /> },

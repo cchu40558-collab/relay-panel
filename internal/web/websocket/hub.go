@@ -23,6 +23,7 @@ const (
 	MessageTypeXrayState    MessageType = "xray_state"
 	MessageTypeClientStats  MessageType = "client_stats"
 	MessageTypeClients      MessageType = "clients"
+	MessageTypeLineMetrics  MessageType = "line_metrics"
 	MessageTypeInvalidate   MessageType = "invalidate"
 	maxMessageSize                      = 10 * 1024 * 1024 // 10MB
 

@@ -45,6 +45,14 @@ func BroadcastTraffic(traffic any) {
 	}
 }
 
+// BroadcastLineMetrics pushes the authoritative line-speed snapshot produced
+// by the Xray traffic job. REST handlers intentionally never calculate rates.
+func BroadcastLineMetrics(metrics any) {
+	if hub := GetHub(); hub != nil {
+		hub.Broadcast(MessageTypeLineMetrics, metrics)
+	}
+}
+
 // BroadcastClientStats broadcasts absolute per-client traffic counters. Small
 // installs send the complete row set each cycle (payload key snapshot=true);
 // above the traffic job's snapshot threshold only the rows active in the

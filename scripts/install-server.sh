@@ -83,7 +83,7 @@ detect_arch() {
 
 install_packages() {
   log "Installing base packages"
-  local common=(ca-certificates curl wget git tar unzip xz-utils openssl)
+  local common=(ca-certificates curl wget git tar unzip xz-utils openssl certbot)
   local build=(gcc g++ make)
   local nginx=()
   if [[ "${PANEL_INSTALL_NGINX}" == "true" ]]; then
@@ -99,6 +99,12 @@ install_packages() {
     yum install -y "${common[@]}" "${build[@]}" "${nginx[@]}"
   else
     die "Unsupported Linux package manager. Install dependencies manually first."
+  fi
+}
+
+enable_certbot_renewal() {
+  if systemctl list-unit-files certbot.timer >/dev/null 2>&1; then
+    systemctl enable --now certbot.timer >/dev/null 2>&1 || true
   fi
 }
 
@@ -524,6 +530,7 @@ main() {
     trap 'status=$?; if [[ "$UPGRADE_COMPLETE" != true ]]; then restore_failed_upgrade; fi; exit "$status"' ERR
   fi
   install_packages
+	  enable_certbot_renewal
   ensure_go
   ensure_node
   mkdir -p "$INSTALL_ROOT"

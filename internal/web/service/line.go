@@ -22,7 +22,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,6 +34,7 @@ import (
 
 const (
 	LineTypeCloudflare             = "cloudflare_ws_tls"
+	LineTypeBunny                  = "bunny_ws_tls"
 	LineTypeReality                = "reality_direct"
 	LineTypeTrojan                 = "trojan_direct"
 	defaultRealityMinClientVersion = "1.8.0"
@@ -45,21 +45,6 @@ var managedNginxCertRoot = "/etc/line-panel/nginx-certs"
 type LineService struct{}
 
 const defaultLineOutboundTestURL = "https://www.gstatic.com/generate_204"
-
-var lineMetricsSpeedCache = struct {
-	sync.Mutex
-	samples map[int]lineTrafficSample
-}{
-	samples: make(map[int]lineTrafficSample),
-}
-
-type lineTrafficSample struct {
-	InboundUp    int64
-	InboundDown  int64
-	OutboundUp   int64
-	OutboundDown int64
-	At           time.Time
-}
 
 type LineSaveRequest struct {
 	Type             string            `json:"type"`
@@ -152,6 +137,11 @@ func (s *LineService) GetLineTypes() []LineTypeInfo {
 			Description: "Cloudflare 橙云 -> Nginx -> VLESS WS TLS -> 住宅出口",
 		},
 		{
+			Type:        LineTypeBunny,
+			Name:        "Bunny CDN WS",
+			Description: "Bunny CDN -> Nginx -> VLESS WS TLS -> 住宅出口",
+		},
+		{
 			Type:        LineTypeReality,
 			Name:        "Reality 直连",
 			Description: "用户 -> VPS Reality -> 住宅出口",
@@ -235,40 +225,12 @@ func (s *LineService) buildLineMetrics(line model.LineProfile) (*LineMetrics, er
 		OutboundLatencyMs: line.LastOutboundLatencyMs,
 		LastCheckedAt:     line.LastCheckAt,
 	}
-	metrics.InboundSpeedUp, metrics.InboundSpeedDown, metrics.OutboundSpeedUp, metrics.OutboundSpeedDown = lineMetricsSpeed(line.Id, lineTrafficSample{
-		InboundUp:    inbound.Up,
-		InboundDown:  inbound.Down,
-		OutboundUp:   outboundTraffic.Up,
-		OutboundDown: outboundTraffic.Down,
-		At:           time.Now(),
-	})
+	snapshot := GetLineTrafficSnapshot(line.Id)
+	metrics.InboundSpeedUp = snapshot.InboundSpeedUp
+	metrics.InboundSpeedDown = snapshot.InboundSpeedDown
+	metrics.OutboundSpeedUp = snapshot.OutboundSpeedUp
+	metrics.OutboundSpeedDown = snapshot.OutboundSpeedDown
 	return metrics, nil
-}
-
-func lineMetricsSpeed(lineID int, sample lineTrafficSample) (int64, int64, int64, int64) {
-	lineMetricsSpeedCache.Lock()
-	defer lineMetricsSpeedCache.Unlock()
-
-	prev, ok := lineMetricsSpeedCache.samples[lineID]
-	lineMetricsSpeedCache.samples[lineID] = sample
-	if !ok || sample.At.Before(prev.At) || sample.At.Equal(prev.At) {
-		return 0, 0, 0, 0
-	}
-	seconds := sample.At.Sub(prev.At).Seconds()
-	if seconds <= 0 {
-		return 0, 0, 0, 0
-	}
-	return bytesPerSecond(prev.InboundUp, sample.InboundUp, seconds),
-		bytesPerSecond(prev.InboundDown, sample.InboundDown, seconds),
-		bytesPerSecond(prev.OutboundUp, sample.OutboundUp, seconds),
-		bytesPerSecond(prev.OutboundDown, sample.OutboundDown, seconds)
-}
-
-func bytesPerSecond(prev int64, current int64, seconds float64) int64 {
-	if current <= prev {
-		return 0
-	}
-	return int64(float64(current-prev) / seconds)
 }
 
 func saturatingSum(a int64, b int64) int64 {
@@ -615,6 +577,14 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 			return s.finishLineApplyError(id, err)
 		}
 	}
+	var bunnyPreflight *bunnyApplyPreflight
+	if lineForPreflight.Type == LineTypeBunny {
+		var err error
+		bunnyPreflight, err = s.prepareBunnyApply(id)
+		if err != nil {
+			return s.finishLineApplyError(id, err)
+		}
+	}
 
 	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		var line model.LineProfile
@@ -624,10 +594,16 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		if realityPreflight != nil && (line.ConfigJSON != realityPreflight.sourceConfigJSON || line.UpdatedAt != realityPreflight.sourceLineUpdatedAt) {
 			return newLineApplyFailure("validate", "Reality preflight is stale", "The line changed while the Reality connection check was running; save and apply again")
 		}
+		if bunnyPreflight != nil && (line.ConfigJSON != bunnyPreflight.sourceConfigJSON || line.UpdatedAt != bunnyPreflight.sourceLineUpdatedAt) {
+			return newLineApplyFailure("validate", "Bunny preflight is stale", "The line changed while the certificate was being prepared; save and apply again")
+		}
 
 		config := ensureLineConfigDefaults(line.Id, line.Type, decodeLineConfig(line.ConfigJSON))
 		if realityPreflight != nil {
 			config = cloneLineConfig(realityPreflight.config)
+		}
+		if bunnyPreflight != nil {
+			config = cloneLineConfig(bunnyPreflight.config)
 		}
 		if line.Type == LineTypeCloudflare {
 			if err := promotePendingOriginCertificate(config); err != nil {
@@ -672,7 +648,7 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		if err := createLineLog(tx, line.Id, "xray", "info", "已生成 Xray 入站和出站草案", "下一阶段写入 3x-ui/Xray 配置并重启 Xray"); err != nil {
 			return err
 		}
-		if line.Type == LineTypeCloudflare || line.Type == LineTypeReality {
+		if line.Type == LineTypeCloudflare || line.Type == LineTypeBunny || line.Type == LineTypeReality {
 			appliedInboundID, err := applyLineXray(tx, &line, &outbound, config)
 			if err != nil {
 				return wrapLineApplyFailure("xray", "Write Xray inbound/outbound failed", err)
@@ -681,7 +657,7 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 			if err := createLineLog(tx, line.Id, "xray", "info", "已写入 Xray 入站和出站配置", fmt.Sprintf("inboundId=%d outboundTag=%s", appliedInboundID, line.OutboundTag)); err != nil {
 				return err
 			}
-			if line.Type == LineTypeCloudflare {
+			if line.Type == LineTypeCloudflare || line.Type == LineTypeBunny {
 				if err := createLineLog(tx, line.Id, "nginx", "info", "已生成 Nginx 草案", "下一阶段写入 Nginx 站点配置并 reload"); err != nil {
 					return err
 				}
@@ -796,6 +772,10 @@ func (s *LineService) DeleteLines(ids []int) []LineDeleteResult {
 }
 
 func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
+	return s.checkLine(id, true)
+}
+
+func (s *LineService) checkLine(id int, persist bool) (*LineCheckResponse, error) {
 	line, outbound, config, inbound, err := loadLineRuntime(id)
 	if err != nil {
 		return nil, err
@@ -859,7 +839,7 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 			}
 		}
 
-		if line.Type == LineTypeCloudflare && truthy(config["nginxApply"]) {
+		if isNginxWSLine(line.Type) && truthy(config["nginxApply"]) {
 			path := strings.TrimSpace(config["nginxConfigPath"])
 			if path == "" {
 				path = defaultNginxConfigPath(line.Id)
@@ -873,7 +853,7 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 			} else {
 				add("Nginx 配置", "pass", "本机开发环境跳过文件检查")
 			}
-		} else if line.Type == LineTypeCloudflare {
+		} else if isNginxWSLine(line.Type) {
 			add("Nginx 配置", "pass", "未启用真实写入，只使用配置草案")
 		}
 	}
@@ -891,6 +871,10 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 		WarnCount: warnCount,
 		FailCount: failCount,
 		Items:     items,
+	}
+
+	if !persist {
+		return resp, nil
 	}
 
 	itemsJSON := mustJSON(items)
@@ -922,7 +906,7 @@ func (s *LineService) CheckLine(id int) (*LineCheckResponse, error) {
 }
 
 func (s *LineService) CheckLineWithInboundLatency(id int, inboundLatencyMs int64) (*LineCheckResponse, error) {
-	resp, err := s.CheckLine(id)
+	resp, err := s.checkLine(id, false)
 	if err != nil {
 		return nil, err
 	}
@@ -931,9 +915,7 @@ func (s *LineService) CheckLineWithInboundLatency(id int, inboundLatencyMs int64
 	if err != nil {
 		return nil, err
 	}
-	if inboundLatencyMs <= 0 {
-		inboundLatencyMs = line.LastInboundLatencyMs
-	}
+	_ = inboundLatencyMs // Browser-to-panel HTTP timing is not line ingress latency.
 
 	outboundLatencyMs := line.LastOutboundLatencyMs
 	if outbound == nil || strings.TrimSpace(outbound.Host) == "" || outbound.Port <= 0 {
@@ -978,7 +960,6 @@ func (s *LineService) CheckLineWithInboundLatency(id int, inboundLatencyMs int64
 		return tx.Model(&model.LineProfile{}).Where("id = ?", line.Id).Updates(map[string]any{
 			"status":                   resp.Status,
 			"last_check_at":            now,
-			"last_inbound_latency_ms":  inboundLatencyMs,
 			"last_outbound_latency_ms": outboundLatencyMs,
 			"last_error":               firstFailedLineCheckMessage(resp.Items),
 		}).Error
@@ -1033,7 +1014,7 @@ func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {
 	var label string
 	var link string
 	switch line.Type {
-	case LineTypeCloudflare:
+	case LineTypeCloudflare, LineTypeBunny:
 		wsPath := strings.TrimSpace(config["wsPath"])
 		if wsPath == "" {
 			wsPath = "/"
@@ -1350,7 +1331,7 @@ func validateLineForApply(line *model.LineProfile, outbound *model.LineOutbound,
 	if outbound == nil {
 		return fmt.Errorf("residential outbound config is required")
 	}
-	if line.Type != LineTypeCloudflare && line.Type != LineTypeReality {
+	if line.Type != LineTypeCloudflare && line.Type != LineTypeBunny && line.Type != LineTypeReality {
 		return fmt.Errorf("unsupported line type for MVP apply: %s", line.Type)
 	}
 	if err := validateHostValue("entry host", line.EntryHost); err != nil {
@@ -1371,7 +1352,7 @@ func validateLineForApply(line *model.LineProfile, outbound *model.LineOutbound,
 	}
 
 	switch line.Type {
-	case LineTypeCloudflare:
+	case LineTypeCloudflare, LineTypeBunny:
 		wsPath, err := validateWSPath(config["wsPath"])
 		if err != nil {
 			return err
@@ -1383,6 +1364,14 @@ func validateLineForApply(line *model.LineProfile, outbound *model.LineOutbound,
 		}
 		if localPort == line.EntryPort {
 			return fmt.Errorf("local Xray port must not equal public entry port: %d", localPort)
+		}
+		if line.Type == LineTypeBunny {
+			if err := validateBunnyConfig(config); err != nil {
+				return err
+			}
+			if localPort == nginxListenPort(*line, config) {
+				return fmt.Errorf("local Xray port must not equal Bunny origin port: %d", localPort)
+			}
 		}
 	case LineTypeReality:
 		if err := ensureRealityConfig(config); err != nil {
@@ -1432,6 +1421,24 @@ func validateWSPath(raw string) (string, error) {
 		return "", fmt.Errorf("Cloudflare WS path is invalid")
 	}
 	return path, nil
+}
+
+func validateBunnyConfig(config map[string]string) error {
+	originHost := strings.TrimSpace(config["originHost"])
+	if err := validateHostValue("Bunny origin host", originHost); err != nil {
+		return err
+	}
+	if net.ParseIP(originHost) != nil || !strings.Contains(originHost, ".") {
+		return fmt.Errorf("Bunny origin host must be a public domain name")
+	}
+	if _, err := parsePortString(config["originPort"]); err != nil {
+		return fmt.Errorf("Bunny origin port invalid: %w", err)
+	}
+	email := strings.TrimSpace(config["acmeEmail"])
+	if !strings.Contains(email, "@") || strings.HasPrefix(email, "@") || strings.HasSuffix(email, "@") {
+		return fmt.Errorf("certificate notification email is required")
+	}
+	return nil
 }
 
 func validateRealityConfig(config map[string]string) error {
@@ -1510,7 +1517,7 @@ func validateX25519Key(label string, value string) error {
 
 func applyLineXray(tx *gorm.DB, line *model.LineProfile, outbound *model.LineOutbound, config map[string]string) (int, error) {
 	switch line.Type {
-	case LineTypeCloudflare:
+	case LineTypeCloudflare, LineTypeBunny:
 		return applyCloudflareXray(tx, line, outbound, config)
 	case LineTypeReality:
 		return applyRealityXray(tx, line, outbound, config)
@@ -2236,7 +2243,7 @@ func normalizeLineSaveRequest(req LineSaveRequest, id int) (LineSaveRequest, err
 
 func isSupportedLineType(lineType string) bool {
 	switch lineType {
-	case LineTypeCloudflare, LineTypeReality:
+	case LineTypeCloudflare, LineTypeBunny, LineTypeReality:
 		return true
 	default:
 		return false
@@ -2247,6 +2254,8 @@ func lineTypeName(lineType string) string {
 	switch lineType {
 	case LineTypeCloudflare:
 		return "Cloudflare 主线路"
+	case LineTypeBunny:
+		return "Bunny CDN WS"
 	case LineTypeReality:
 		return "Reality 直连"
 	case LineTypeTrojan:
@@ -2260,6 +2269,8 @@ func defaultLinePort(lineType string) int {
 	switch lineType {
 	case LineTypeCloudflare:
 		return 8443
+	case LineTypeBunny:
+		return 443
 	default:
 		return 443
 	}
@@ -2270,6 +2281,8 @@ func buildLineChainText(lineType string, outboundType string) string {
 	switch lineType {
 	case LineTypeCloudflare:
 		return fmt.Sprintf("用户 -> Cloudflare -> Nginx -> Xray 本地入站 -> %s 住宅出口", outbound)
+	case LineTypeBunny:
+		return fmt.Sprintf("用户 -> Bunny CDN -> Nginx -> Xray 本地入站 -> %s 住宅出口", outbound)
 	case LineTypeReality:
 		return fmt.Sprintf("用户 -> VPS Reality -> %s 住宅出口", outbound)
 	case LineTypeTrojan:
@@ -2286,7 +2299,7 @@ func ensureLineConfigDefaults(lineID int, lineType string, config map[string]str
 	if strings.TrimSpace(config["clientId"]) == "" {
 		config["clientId"] = uuid.NewString()
 	}
-	if lineType == LineTypeCloudflare {
+	if lineType == LineTypeCloudflare || lineType == LineTypeBunny {
 		if strings.TrimSpace(config["wsPath"]) == "" {
 			config["wsPath"] = fmt.Sprintf("/line-%d-ws", lineID)
 		}
@@ -2296,6 +2309,12 @@ func ensureLineConfigDefaults(lineID int, lineType string, config map[string]str
 		if strings.TrimSpace(config["nginxConfigPath"]) == "" {
 			config["nginxConfigPath"] = defaultNginxConfigPath(lineID)
 		}
+	}
+	if lineType == LineTypeBunny {
+		if strings.TrimSpace(config["originPort"]) == "" {
+			config["originPort"] = "8443"
+		}
+		config["nginxApply"] = "true"
 	}
 	if lineType == LineTypeReality {
 		if strings.TrimSpace(config["realitySni"]) == "" {
@@ -2448,9 +2467,13 @@ func buildLineApplyPlan(line model.LineProfile, outbound *model.LineOutbound, co
 			"检查整条链路是否能访问外网",
 		},
 	}
-	if line.Type == LineTypeCloudflare {
+	if isNginxWSLine(line.Type) {
 		plan.Nginx = buildNginxPlan(line, config)
-		plan.Checks = append([]string{"检查 Nginx 配置语法", "检查 Cloudflare 回源域名"}, plan.Checks...)
+		originCheck := "检查 Cloudflare 回源域名"
+		if line.Type == LineTypeBunny {
+			originCheck = "检查 Bunny 源站域名和证书"
+		}
+		plan.Checks = append([]string{"检查 Nginx 配置语法", originCheck}, plan.Checks...)
 	}
 	plan.Summary = append(plan.Summary, "住宅出口类型: "+strings.ToUpper(outboundType))
 	return plan
@@ -2464,7 +2487,7 @@ func buildLineSummary(line model.LineProfile, outbound *model.LineOutbound, conf
 	if outbound != nil {
 		summary = append(summary, "住宅出口: "+formatHostPort(outbound.Host, outbound.Port))
 	}
-	if line.Type == LineTypeCloudflare {
+	if isNginxWSLine(line.Type) {
 		summary = append(summary, "WS 路径: "+config["wsPath"])
 		summary = append(summary, "Xray 本地端口: "+config["localXrayPort"])
 	}
@@ -2479,7 +2502,7 @@ func buildLineSummary(line model.LineProfile, outbound *model.LineOutbound, conf
 func buildXrayInboundPlan(line model.LineProfile, config map[string]string) map[string]any {
 	tag := fmt.Sprintf("line-%d-in", line.Id)
 	switch line.Type {
-	case LineTypeCloudflare:
+	case LineTypeCloudflare, LineTypeBunny:
 		return map[string]any{
 			"tag":      tag,
 			"listen":   "127.0.0.1",
@@ -2540,8 +2563,28 @@ func buildXrayOutboundPlan(line model.LineProfile, outbound *model.LineOutbound)
 	}
 }
 
+func isNginxWSLine(lineType string) bool {
+	return lineType == LineTypeCloudflare || lineType == LineTypeBunny
+}
+
+func nginxServerHost(line model.LineProfile, config map[string]string) string {
+	if line.Type == LineTypeBunny {
+		return strings.TrimSpace(config["originHost"])
+	}
+	return line.EntryHost
+}
+
+func nginxListenPort(line model.LineProfile, config map[string]string) int {
+	if line.Type == LineTypeBunny {
+		if port, err := parsePortString(config["originPort"]); err == nil {
+			return port
+		}
+	}
+	return line.EntryPort
+}
+
 func buildNginxPlan(line model.LineProfile, config map[string]string) string {
-	host := line.EntryHost
+	host := nginxServerHost(line, config)
 	if host == "" {
 		host = "_"
 	}
@@ -2564,7 +2607,7 @@ func buildNginxPlan(line model.LineProfile, config map[string]string) string {
         proxy_set_header Host $host;
         proxy_pass http://127.0.0.1:%s;
     }
-}`, line.EntryPort, host, tlsConfig, config["wsPath"], config["localXrayPort"])
+}`, nginxListenPort(line, config), host, tlsConfig, config["wsPath"], config["localXrayPort"])
 }
 
 func defaultNginxConfigPath(lineID int) string {
@@ -2658,7 +2701,7 @@ type nginxExecutor interface {
 }
 
 func removeLineNginxConfig(line model.LineProfile, config map[string]string) (*nginxConfigBackup, error) {
-	if line.Type != LineTypeCloudflare || !truthy(config["nginxApply"]) || runtime.GOOS != "linux" {
+	if !isNginxWSLine(line.Type) || !truthy(config["nginxApply"]) || runtime.GOOS != "linux" {
 		return nil, nil
 	}
 	path := strings.TrimSpace(config["nginxConfigPath"])

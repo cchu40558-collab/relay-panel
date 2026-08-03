@@ -8,6 +8,7 @@ import type { UploadFile } from 'antd';
 import { CheckCircleOutlined, CopyOutlined, DeleteOutlined, EditOutlined, MoreOutlined, QrcodeOutlined, SaveOutlined } from '@ant-design/icons';
 
 import { keys } from '@/api/queryKeys';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import { ClipboardManager, HttpUtil, SizeFormatter } from '@/utils';
 import AppSidebar from '@/layouts/AppSidebar';
 import './LinesPage.css';
@@ -93,6 +94,10 @@ type LineMetrics = {
   lastCheckedAt: number;
 };
 
+type LineTrafficSnapshot = Pick<LineMetrics, 'lineId' | 'inboundSpeedUp' | 'inboundSpeedDown' | 'outboundSpeedUp' | 'outboundSpeedDown'> & {
+  collectedAt: number;
+};
+
 type LineShareResponse = {
   links: Array<{
     label: string;
@@ -107,13 +112,12 @@ type LineDeleteResult = {
   message?: string;
 };
 
-type LineColumnKey = 'status' | 'name' | 'speed' | 'inboundLatency' | 'outboundLatency' | 'traffic' | 'actions';
+type LineColumnKey = 'status' | 'name' | 'speed' | 'outboundLatency' | 'traffic' | 'actions';
 
 const lineColumnDefaults: Record<LineColumnKey, number> = {
   status: 96,
   name: 220,
   speed: 210,
-  inboundLatency: 140,
   outboundLatency: 140,
   traffic: 150,
   actions: 190,
@@ -123,7 +127,6 @@ const lineColumnMinimums: Record<LineColumnKey, number> = {
   status: 80,
   name: 150,
   speed: 150,
-  inboundLatency: 110,
   outboundLatency: 110,
   traffic: 120,
   actions: 160,
@@ -146,6 +149,9 @@ type LineFormValues = {
   nginxCertFile?: string;
   nginxKeyFile?: string;
   nginxApply?: boolean;
+	originHost?: string;
+	originPort?: number;
+	acmeEmail?: string;
   realitySni?: string;
   realityShortId?: string;
 };
@@ -243,17 +249,7 @@ async function applyLine(id: number): Promise<LineApplyResult> {
 }
 
 async function checkLine(id: number): Promise<LineCheckResponse> {
-  let inboundLatencyMs: number;
-  const startedAt = performance.now();
-  try {
-    await fetchSingleLineMetrics(id);
-    inboundLatencyMs = Math.max(1, Math.round(performance.now() - startedAt));
-  } catch {
-    inboundLatencyMs = 0;
-  }
-  const msg = await HttpUtil.post<LineCheckResponse>(`/panel/api/lines/${id}/check`, {
-    inboundLatencyMs,
-  }, {
+	const msg = await HttpUtil.post<LineCheckResponse>(`/panel/api/lines/${id}/check`, {}, {
     headers: { 'Content-Type': 'application/json' },
   });
   if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to check line');
@@ -280,6 +276,7 @@ async function deleteLines(ids: number[]): Promise<LineDeleteResult[]> {
 
 function lineTypeFromPath(pathname: string) {
   if (pathname.includes('/deploy/reality')) return 'reality_direct';
+	if (pathname.includes('/deploy/bunny')) return 'bunny_ws_tls';
   return 'cloudflare_ws_tls';
 }
 
@@ -301,6 +298,8 @@ function typeLabel(type: string) {
   switch (type) {
     case 'cloudflare_ws_tls':
       return 'Cloudflare 主线路';
+	case 'bunny_ws_tls':
+		return 'Bunny CDN WS';
     case 'reality_direct':
       return 'Reality 直连';
     case 'trojan_direct':
@@ -375,8 +374,6 @@ function LineMonitorCards({ line, metrics }: { line: LineDetail; metrics?: LineM
             <dd><LineSpeedCell up={metrics?.inboundSpeedUp} down={metrics?.inboundSpeedDown} /></dd>
             <dt>累计流量</dt>
             <dd>{SizeFormatter.sizeFormat(metrics?.inboundTraffic)}</dd>
-            <dt>入站延迟</dt>
-            <dd>{formatLatency(metrics?.inboundLatencyMs)}</dd>
           </dl>
         </div>
         <div className="line-monitor-card">
@@ -415,7 +412,10 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
   if (values.nginxConfigPath) config.nginxConfigPath = values.nginxConfigPath;
   if (values.nginxCertFile) config.nginxCertFile = values.nginxCertFile;
   if (values.nginxKeyFile) config.nginxKeyFile = values.nginxKeyFile;
-  config.nginxApply = values.nginxApply ? 'true' : 'false';
+	config.nginxApply = type === 'bunny_ws_tls' ? 'true' : (values.nginxApply ? 'true' : 'false');
+	if (values.originHost) config.originHost = values.originHost.trim();
+	if (values.originPort) config.originPort = String(values.originPort);
+	if (values.acmeEmail) config.acmeEmail = values.acmeEmail.trim();
   if (values.realitySni) config.realitySni = values.realitySni;
   if (values.realityShortId) config.realityShortId = values.realityShortId;
 
@@ -449,6 +449,9 @@ function detailToFormValues(line: LineDetail): LineFormValues {
     nginxCertFile: config.nginxCertFile,
     nginxKeyFile: config.nginxKeyFile,
     nginxApply: config.nginxApply === 'true',
+	originHost: config.originHost,
+	originPort: config.originPort ? Number(config.originPort) : undefined,
+	acmeEmail: config.acmeEmail,
     realitySni: config.realitySni,
     realityShortId: config.realityShortId,
   };
@@ -628,6 +631,7 @@ function LineEditor({
     form.setFieldsValue({
       name: selectedType.name,
       entryPort: defaultEntryPort(type),
+		originPort: type === 'bunny_ws_tls' ? 8443 : undefined,
       outboundType: 'socks5',
       ...initialValues,
     });
@@ -639,11 +643,11 @@ function LineEditor({
     const hasManualCertificate = Boolean(values.nginxCertFile?.trim());
     const hasManualKey = Boolean(values.nginxKeyFile?.trim());
     const hasUpload = Boolean(certificateFile || privateKeyFile);
-    if (values.nginxApply && !((hasManualCertificate && hasManualKey) || (certificateFile && privateKeyFile))) {
+	if (type === 'cloudflare_ws_tls' && values.nginxApply && !((hasManualCertificate && hasManualKey) || (certificateFile && privateKeyFile))) {
       message.error(hasUpload ? '请同时选择源站证书和私钥文件' : '启用 Nginx 时请填写证书路径，或同时上传证书和私钥');
       return;
     }
-    if ((hasManualCertificate && !hasManualKey) || (!hasManualCertificate && hasManualKey)) {
+	if (type === 'cloudflare_ws_tls' && ((hasManualCertificate && !hasManualKey) || (!hasManualCertificate && hasManualKey))) {
       message.error('手工证书路径和私钥路径必须同时填写');
       return;
     }
@@ -658,7 +662,7 @@ function LineEditor({
             <Input placeholder={selectedType.name} />
           </Form.Item>
           <Form.Item label="入口地址" name="entryHost" rules={[{ validator: validateHost('入口地址') }]}>
-            <Input placeholder={type === 'cloudflare_ws_tls' ? 'Cloudflare 域名' : '服务器 IP 或域名'} />
+            <Input placeholder={type === 'cloudflare_ws_tls' ? 'Cloudflare 域名' : type === 'bunny_ws_tls' ? 'Bunny 公网入口，例如 wakeup01.b-cdn.net' : '服务器 IP 或域名'} />
           </Form.Item>
           <Form.Item label="入口端口" name="entryPort" rules={[{ required: true, message: '请填写入口端口' }, { type: 'number', min: 1, max: 65535, message: '端口必须在 1 到 65535 之间' }]}>
             <InputNumber min={1} max={65535} />
@@ -748,6 +752,32 @@ function LineEditor({
           </div>
         )}
 
+        {type === 'bunny_ws_tls' && (
+          <div className="line-subsection">
+            <Typography.Title level={5}>Bunny / Nginx</Typography.Title>
+            <div className="line-form-grid">
+              <Form.Item label="WS 路径" name="wsPath" rules={[{ validator: validateOptionalWSPath }]}>
+                <Input placeholder="自动生成" />
+              </Form.Item>
+              <Form.Item label="本地 Xray 端口" name="localXrayPort">
+                <InputNumber min={1} max={65535} placeholder="自动寻找" />
+              </Form.Item>
+              <Form.Item label="Nginx 配置路径" name="nginxConfigPath">
+                <Input placeholder="/etc/nginx/conf.d/x-ui-line-2.conf" />
+              </Form.Item>
+              <Form.Item label="Bunny 源站域名" name="originHost" rules={[{ validator: validateHost('Bunny 源站域名') }]}>
+                <Input placeholder="01-bunny-02-inter-los.wakeup-ai.top" />
+              </Form.Item>
+              <Form.Item label="Bunny 源站端口" name="originPort" rules={[{ required: true, message: '请填写 Bunny 源站端口' }, { type: 'number', min: 1, max: 65535, message: '端口必须在 1 到 65535 之间' }]}>
+                <InputNumber min={1} max={65535} placeholder="8443" />
+              </Form.Item>
+              <Form.Item label="证书通知邮箱" name="acmeEmail" rules={[{ required: true, message: '请填写证书通知邮箱' }, { type: 'email', message: '邮箱格式不正确' }]}>
+                <Input placeholder="name@example.com" />
+              </Form.Item>
+            </div>
+          </div>
+        )}
+
         {type === 'reality_direct' && (
           <div className="line-subsection">
             <Typography.Title level={5}>Reality</Typography.Title>
@@ -780,6 +810,12 @@ function LineTypePicker({ onSelect }: { onSelect: (type: string) => void }) {
       chain: ['用户', 'Cloudflare', 'Nginx -> Xray', '住宅出口'],
       description: '通过 Cloudflare 橙云接入，VPS 由 Nginx 转发到本地 Xray。',
     },
+	{
+		type: 'bunny_ws_tls',
+		name: 'Bunny CDN WS',
+		chain: ['用户', 'Bunny CDN', 'Nginx -> Xray', '住宅出口'],
+		description: '通过 Bunny CDN 接入，自动申请源站证书并由 Nginx 转发到本地 Xray。',
+	},
     {
       type: 'reality_direct',
       name: 'Reality 直连',
@@ -925,7 +961,6 @@ export default function LinesPage() {
         status: Math.max(lineColumnMinimums.status, parsed.status ?? lineColumnDefaults.status),
         name: Math.max(lineColumnMinimums.name, parsed.name ?? lineColumnDefaults.name),
         speed: Math.max(lineColumnMinimums.speed, parsed.speed ?? lineColumnDefaults.speed),
-        inboundLatency: Math.max(lineColumnMinimums.inboundLatency, parsed.inboundLatency ?? lineColumnDefaults.inboundLatency),
         outboundLatency: Math.max(lineColumnMinimums.outboundLatency, parsed.outboundLatency ?? lineColumnDefaults.outboundLatency),
         traffic: Math.max(lineColumnMinimums.traffic, parsed.traffic ?? lineColumnDefaults.traffic),
         actions: Math.max(lineColumnMinimums.actions, parsed.actions ?? lineColumnDefaults.actions),
@@ -935,7 +970,7 @@ export default function LinesPage() {
     }
   });
   const isDeployPicker = location.pathname === '/lines/deploy';
-  const isDeployForm = location.pathname === '/lines/deploy/cloudflare' || location.pathname === '/lines/deploy/reality';
+	const isDeployForm = location.pathname === '/lines/deploy/cloudflare' || location.pathname === '/lines/deploy/bunny' || location.pathname === '/lines/deploy/reality';
   const isDiagnostics = location.pathname === '/diagnostics';
   const isLineEdit = location.pathname.endsWith('/edit');
   const lineId = params.id ? Number(params.id) : 0;
@@ -957,7 +992,7 @@ export default function LinesPage() {
   const { data: lineMetrics = [] } = useQuery({
     queryKey: keys.lines.metrics(),
     queryFn: fetchLineMetrics,
-    refetchInterval: 5000,
+	refetchInterval: 30000,
   });
   const { data: lineDetail, isLoading: isLineLoading } = useQuery({
     queryKey: keys.lines.detail(lineId),
@@ -968,11 +1003,41 @@ export default function LinesPage() {
     queryKey: keys.lines.metric(lineId),
     queryFn: () => fetchSingleLineMetrics(lineId),
     enabled: lineId > 0,
-    refetchInterval: 5000,
+	refetchInterval: 30000,
+  });
+  const [liveLineTraffic, setLiveLineTraffic] = useState<Map<number, LineTrafficSnapshot>>(() => new Map());
+  useWebSocket({
+    line_metrics: (payload) => {
+      if (!Array.isArray(payload)) return;
+      const next = new Map<number, LineTrafficSnapshot>();
+      for (const value of payload) {
+        if (!value || typeof value !== 'object') continue;
+        const snapshot = value as Partial<LineTrafficSnapshot>;
+        const snapshotLineId = snapshot.lineId;
+        if (typeof snapshotLineId !== 'number' || !Number.isInteger(snapshotLineId) || snapshotLineId <= 0) continue;
+        next.set(snapshotLineId, {
+          lineId: snapshotLineId,
+          inboundSpeedUp: Number(snapshot.inboundSpeedUp) || 0,
+          inboundSpeedDown: Number(snapshot.inboundSpeedDown) || 0,
+          outboundSpeedUp: Number(snapshot.outboundSpeedUp) || 0,
+          outboundSpeedDown: Number(snapshot.outboundSpeedDown) || 0,
+          collectedAt: Number(snapshot.collectedAt) || 0,
+        });
+      }
+      setLiveLineTraffic(next);
+    },
   });
   const metricsByLineId = useMemo(
-    () => new Map(lineMetrics.map((item) => [item.lineId, item])),
-    [lineMetrics],
+    () => {
+      const metrics = new Map(lineMetrics.map((item) => [item.lineId, item]));
+      for (const snapshot of liveLineTraffic.values()) {
+        const current = metrics.get(snapshot.lineId);
+        if (!current) continue;
+        metrics.set(snapshot.lineId, { ...current, ...snapshot });
+      }
+      return metrics;
+    },
+    [lineMetrics, liveLineTraffic],
   );
   const diagnosticQueries = useQueries({
     queries: isDiagnostics
@@ -1205,11 +1270,6 @@ export default function LinesPage() {
       },
     },
     {
-      title: columnTitle('入站延迟', 'inboundLatency'),
-      width: columnWidths.inboundLatency,
-      render: (_, row) => formatLatency(metricsByLineId.get(row.id)?.inboundLatencyMs ?? row.lastInboundLatencyMs),
-    },
-    {
       title: columnTitle('出站延迟', 'outboundLatency'),
       width: columnWidths.outboundLatency,
       render: (_, row) => formatLatency(metricsByLineId.get(row.id)?.outboundLatencyMs ?? row.lastOutboundLatencyMs),
@@ -1333,7 +1393,7 @@ export default function LinesPage() {
                   { key: 'status', label: '当前状态', children: statusTag(lineDetail.status) },
                   { key: 'entry', label: '入口', children: lineDetail.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : '-' },
                   { key: 'traffic', label: '累计流量', children: SizeFormatter.sizeFormat(lineDetailMetrics?.totalTraffic) },
-                  { key: 'latency', label: '最近检测', children: `${formatLatency(lineDetailMetrics?.inboundLatencyMs)} / ${formatLatency(lineDetailMetrics?.outboundLatencyMs)}` },
+				  { key: 'latency', label: '出站检测延迟', children: formatLatency(lineDetailMetrics?.outboundLatencyMs) },
                 ]} />
               </section>
               <LineChainDiagram line={lineDetail} />
@@ -1356,8 +1416,8 @@ export default function LinesPage() {
     );
   }
 
-  if (isDeployPicker) {
-    return <LinePageShell><LineTypePicker onSelect={(type) => navigate(type === 'reality_direct' ? '/lines/deploy/reality' : '/lines/deploy/cloudflare')} /></LinePageShell>;
+	if (isDeployPicker) {
+		return <LinePageShell><LineTypePicker onSelect={(type) => navigate(type === 'reality_direct' ? '/lines/deploy/reality' : type === 'bunny_ws_tls' ? '/lines/deploy/bunny' : '/lines/deploy/cloudflare')} /></LinePageShell>;
   }
 
   if (isDeployForm) {

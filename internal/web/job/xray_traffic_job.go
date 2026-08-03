@@ -79,6 +79,7 @@ func (j *XrayTrafficJob) Run() {
 	if err != nil {
 		return
 	}
+	lineTrafficSnapshots := service.RecordLineTrafficDeltas(traffics, time.Now())
 	needRestart0, clientsDisabled, err := j.inboundService.AddTraffic(traffics, clientTraffics)
 	if err != nil {
 		logger.Warning("add inbound traffic failed:", err)
@@ -203,6 +204,7 @@ func (j *XrayTrafficJob) Run() {
 		"activeInbounds": j.inboundService.GetActiveInboundsByGuid(),
 		"lastOnlineMap":  lastOnlineMap,
 	})
+	websocket.BroadcastLineMetrics(lineTrafficSnapshots)
 
 	clientStatsPayload := map[string]any{"snapshot": snapshot}
 	if len(stats) > 0 {

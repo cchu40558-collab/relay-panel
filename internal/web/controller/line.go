@@ -258,7 +258,7 @@ type prepareLineResponse struct {
 func (a *LineController) prepareLine(c *gin.Context) {
 	var req prepareLineRequest
 	_ = c.ShouldBindJSON(&req)
-	if req.Type != service.LineTypeCloudflare && req.Type != service.LineTypeReality {
+	if req.Type != service.LineTypeCloudflare && req.Type != service.LineTypeBunny && req.Type != service.LineTypeReality {
 		req.Type = service.LineTypeCloudflare
 	}
 
@@ -274,6 +274,10 @@ func (a *LineController) prepareLine(c *gin.Context) {
 		resp.Name = "Cloudflare 主线路"
 		resp.EntryPort = 8443
 		resp.ChainText = "用户 -> Cloudflare -> Nginx:8443 -> Xray 本地入站 -> SOCKS5/HTTP/HTTPS 住宅出口"
+	case "bunny_ws_tls":
+		resp.Name = "Bunny CDN WS"
+		resp.EntryPort = 443
+		resp.ChainText = "用户 -> Bunny CDN -> Nginx 源站 -> Xray 本地入站 -> 住宅出口"
 	case "reality_direct":
 		resp.Name = "Reality 直连"
 		resp.ChainText = "用户 -> VPS Reality:443 -> SOCKS5/HTTP/HTTPS 住宅出口"
