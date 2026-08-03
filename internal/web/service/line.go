@@ -62,8 +62,36 @@ type LineSaveRequest struct {
 }
 
 type LineValidityRequest struct {
-	ValidFrom  *int64 `json:"validFrom,omitempty"`
 	ValidUntil *int64 `json:"validUntil,omitempty"`
+}
+
+type LineDiagnosticsQuery struct {
+	Page     int
+	PageSize int
+	LineID   int
+	Kind     string
+	Level    string
+}
+
+type LineDiagnosticEvent struct {
+	ID        string          `json:"id"`
+	LineID    int             `json:"lineId"`
+	LineName  string          `json:"lineName"`
+	Kind      string          `json:"kind"`
+	Action    string          `json:"action"`
+	Level     string          `json:"level"`
+	Message   string          `json:"message"`
+	Detail    string          `json:"detail,omitempty"`
+	PassCount int             `json:"passCount,omitempty"`
+	WarnCount int             `json:"warnCount,omitempty"`
+	FailCount int             `json:"failCount,omitempty"`
+	Items     []LineCheckItem `json:"items,omitempty"`
+	CreatedAt int64           `json:"createdAt"`
+}
+
+type LineDiagnosticsResponse struct {
+	Items []LineDiagnosticEvent `json:"items"`
+	Total int                   `json:"total"`
 }
 
 type LineDetail struct {

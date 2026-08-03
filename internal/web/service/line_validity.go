@@ -81,9 +81,6 @@ func (s *LineService) UpdateLineValidity(id int, req LineValidityRequest) (*Line
 		if err != nil {
 			return err
 		}
-		if validUntil == 0 {
-			return fmt.Errorf("use a future expiry time for a running line")
-		}
 		if err := tx.Model(&line).Updates(map[string]any{
 			"valid_from":  validFrom,
 			"valid_until": validUntil,
@@ -115,9 +112,6 @@ func (s *LineService) RenewLine(id int, req LineValidityRequest) (*LineDetail, e
 		_, validUntil, err := normalizeLineValidity(&from, req.ValidUntil, now)
 		if err != nil {
 			return err
-		}
-		if validUntil == 0 {
-			return fmt.Errorf("a future expiry time is required")
 		}
 		if err := tx.Model(&line).Updates(map[string]any{
 			"valid_from":               from,

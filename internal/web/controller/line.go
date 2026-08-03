@@ -32,6 +32,7 @@ func (a *LineController) initRouter(g *gin.RouterGroup) {
 
 	lines := g.Group("/lines")
 	lines.GET("/metrics", a.listLineMetrics)
+	lines.GET("/diagnostics", a.listLineDiagnostics)
 	lines.GET("/:id", a.getLine)
 	lines.GET("/:id/metrics", a.getLineMetrics)
 	lines.POST("", a.createLine)
@@ -112,6 +113,20 @@ func (a *LineController) listLines(c *gin.Context) {
 func (a *LineController) listLineMetrics(c *gin.Context) {
 	metrics, err := a.lineService.ListLineMetrics()
 	jsonObj(c, metrics, err)
+}
+
+func (a *LineController) listLineDiagnostics(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "25"))
+	lineID, _ := strconv.Atoi(c.Query("lineId"))
+	result, err := a.lineService.ListLineDiagnostics(service.LineDiagnosticsQuery{
+		Page:     page,
+		PageSize: pageSize,
+		LineID:   lineID,
+		Kind:     c.Query("kind"),
+		Level:    c.Query("level"),
+	})
+	jsonObj(c, result, err)
 }
 
 func (a *LineController) getLine(c *gin.Context) {

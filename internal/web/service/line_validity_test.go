@@ -173,3 +173,28 @@ func TestRenewLineRequiresExpiredManualLock(t *testing.T) {
 		t.Fatal("active renewal was accepted without a new expiry")
 	}
 }
+
+func TestUpdateLineValidityAllowsLongTerm(t *testing.T) {
+	setupLineValidityDB(t)
+	line := &model.LineProfile{
+		Name:       "long-term-validity",
+		Type:       LineTypeReality,
+		Status:     "active",
+		ValidUntil: time.Now().Add(24 * time.Hour).Unix(),
+		ConfigJSON: `{}`,
+	}
+	if err := database.GetDB().Create(line).Error; err != nil {
+		t.Fatalf("create line: %v", err)
+	}
+	longTerm := int64(0)
+	if _, err := (&LineService{}).UpdateLineValidity(line.Id, LineValidityRequest{ValidUntil: &longTerm}); err != nil {
+		t.Fatalf("UpdateLineValidity(long term): %v", err)
+	}
+	var got model.LineProfile
+	if err := database.GetDB().First(&got, line.Id).Error; err != nil {
+		t.Fatalf("load line: %v", err)
+	}
+	if got.ValidUntil != 0 || got.Status != "active" || got.ManualReenableRequired {
+		t.Fatalf("long-term update = %#v", got)
+	}
+}

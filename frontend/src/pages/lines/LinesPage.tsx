@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Key, PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router';
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Collapse, DatePicker, Descriptions, Drawer, Dropdown, Empty, Form, Input, InputNumber, Layout, Modal, QRCode, Select, Space, Switch, Table, Tag, Typography, Upload, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import type { UploadFile } from 'antd';
@@ -40,6 +40,8 @@ type LineProfile = {
   lastCheckAt: number;
   lastInboundLatencyMs?: number;
   lastOutboundLatencyMs?: number;
+  createdAt: number;
+  updatedAt: number;
   validFrom: number;
   validUntil: number;
   expiredAt: number;
@@ -50,7 +52,6 @@ type LineDetail = LineProfile & {
   outbound?: LineOutbound;
   config?: Record<string, string>;
   plan?: LineApplyPlan;
-  logs?: LineApplyLog[];
 };
 
 type LineApplyPlan = {
@@ -62,13 +63,25 @@ type LineApplyPlan = {
   checks: string[];
 };
 
-type LineApplyLog = {
-  id: number;
+type LineDiagnosticEvent = {
+  id: string;
+  lineId: number;
+  lineName: string;
+  kind: 'check' | 'operation';
   action: string;
-  level: string;
+  level: 'info' | 'warning' | 'error';
   message: string;
-  detail: string;
+  detail?: string;
+  passCount?: number;
+  warnCount?: number;
+  failCount?: number;
+  items?: LineCheckResponse['items'];
   createdAt: number;
+};
+
+type LineDiagnosticsResponse = {
+  items: LineDiagnosticEvent[];
+  total: number;
 };
 
 type LineCheckResponse = {
@@ -123,24 +136,24 @@ type LineColumnKey = 'status' | 'name' | 'validity' | 'speed' | 'outboundLatency
 const lineColumnDefaults: Record<LineColumnKey, number> = {
   status: 96,
   name: 220,
-  validity: 220,
-  speed: 210,
-  outboundLatency: 140,
-  traffic: 150,
+  validity: 236,
+  speed: 150,
+  outboundLatency: 115,
+  traffic: 120,
   actions: 190,
 };
 
 const lineColumnMinimums: Record<LineColumnKey, number> = {
   status: 80,
   name: 150,
-  validity: 180,
-  speed: 150,
-  outboundLatency: 110,
-  traffic: 120,
-  actions: 160,
+  validity: 196,
+  speed: 112,
+  outboundLatency: 92,
+  traffic: 96,
+  actions: 132,
 };
 
-const lineColumnWidthsStorageKey = 'line-table-column-widths-v2';
+const lineColumnWidthsStorageKey = 'line-table-column-widths-v3';
 
 type LineFormValues = {
   name?: string;
@@ -160,7 +173,8 @@ type LineFormValues = {
 	originHost?: string;
 	originPort?: number;
   acmeEmail?: string;
-  validityRange?: [Dayjs, Dayjs];
+  validFrom?: Dayjs;
+  validUntil?: Dayjs;
   realitySni?: string;
   realityShortId?: string;
 };
@@ -213,6 +227,16 @@ async function fetchLineMetrics(): Promise<LineMetrics[]> {
 async function fetchSingleLineMetrics(id: number): Promise<LineMetrics> {
   const msg = await HttpUtil.get<LineMetrics>(`/panel/api/lines/${id}/metrics`, undefined, { silent: true });
   if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to fetch line metrics');
+  return msg.obj;
+}
+
+async function fetchLineDiagnostics(params: { page: number; pageSize: number; lineId?: number; kind?: string; level?: string }): Promise<LineDiagnosticsResponse> {
+  const query = new URLSearchParams({ page: String(params.page), pageSize: String(params.pageSize) });
+  if (params.lineId) query.set('lineId', String(params.lineId));
+  if (params.kind) query.set('kind', params.kind);
+  if (params.level) query.set('level', params.level);
+  const msg = await HttpUtil.get<LineDiagnosticsResponse>(`/panel/api/lines/diagnostics?${query.toString()}`, undefined, { silent: true });
+  if (!msg.success || !msg.obj) throw new Error(msg.msg || 'Failed to load diagnostics');
   return msg.obj;
 }
 
@@ -320,12 +344,9 @@ function lineRequiresManualRenewal(line: LineProfile) {
 }
 
 function formatLineValidity(line: LineProfile) {
-  if (lineRequiresManualRenewal(line)) return `已到期 ${formatLineTime(line.expiredAt || line.validUntil)}`;
-  if (!line.validUntil) return '长期有效';
-  const remaining = line.validUntil - Math.floor(Date.now() / 1000);
-  if (remaining <= 0) return `等待停用 ${formatLineTime(line.validUntil)}`;
-  const hours = Math.ceil(remaining / 3600);
-  return `${formatLineTime(line.validUntil)}（剩余 ${hours} 小时）`;
+  const start = line.validFrom || line.createdAt;
+  if (!line.validUntil) return `起：${formatLineTime(start)}`;
+  return `起：${formatLineTime(start)}\n止：${formatLineTime(line.validUntil)}`;
 }
 
 function LinePageShell({ children }: { children: ReactNode }) {
@@ -403,52 +424,64 @@ function LineChainDiagram({ line }: { line: LineDetail }) {
   );
 }
 
-function LineMonitorCards({ line, metrics }: { line: LineDetail; metrics?: LineMetrics }) {
-  const outboundLabel = line.outbound?.host ? `${line.outbound.type.toUpperCase()} / ${line.outbound.host}:${line.outbound.port}` : '--';
+function LineRuntimeOverview({ line, metrics }: { line: LineDetail; metrics?: LineMetrics }) {
+  const config = line.config ?? {};
+  const start = line.validFrom || line.createdAt;
+  const isWS = line.type === 'cloudflare_ws_tls' || line.type === 'bunny_ws_tls';
+  const outbound = line.outbound?.host ? `${line.outbound.type.toUpperCase()} ${line.outbound.host}:${line.outbound.port}` : '--';
+  const localPort = config.localXrayPort || '--';
   return (
     <section className="line-detail-card">
-      <Typography.Title level={5}>三段监控</Typography.Title>
-      <div className="line-monitor-grid">
-        <div className="line-monitor-card">
-          <div className="line-monitor-title">第1段 入站侧</div>
-          <Typography.Text type="secondary">用户/CDN -&gt; 服务器入口</Typography.Text>
-          <dl>
-            <dt>实时吞吐</dt>
-            <dd><LineSpeedCell up={metrics?.inboundSpeedUp} down={metrics?.inboundSpeedDown} /></dd>
-            <dt>累计流量</dt>
-            <dd>{SizeFormatter.sizeFormat(metrics?.inboundTraffic)}</dd>
-          </dl>
+      <div className="line-runtime-heading">
+        <div>
+          <Typography.Title level={5}>线路运行概览</Typography.Title>
+          <Typography.Text type="secondary">当前保存的线路配置与最近一次运行数据</Typography.Text>
         </div>
-        <div className="line-monitor-card">
-          <div className="line-monitor-title">第2段 出站侧</div>
-          <Typography.Text type="secondary">服务器 -&gt; 住宅代理</Typography.Text>
-          <dl>
-            <dt>实时吞吐</dt>
-            <dd><LineSpeedCell up={metrics?.outboundSpeedUp} down={metrics?.outboundSpeedDown} /></dd>
-            <dt>累计流量</dt>
-            <dd>{SizeFormatter.sizeFormat(metrics?.outboundTraffic)}</dd>
-            <dt>住宅出口</dt>
-            <dd>{outboundLabel}</dd>
-          </dl>
+        {statusTag(line.status)}
+      </div>
+      <div className="line-runtime-grid">
+        <div className="line-runtime-group">
+          <Typography.Text strong>生命周期</Typography.Text>
+          <Descriptions size="small" column={1} items={[
+            { key: 'start', label: '开始时间', children: formatLineTime(start) },
+            { key: 'end', label: '结束时间', children: line.validUntil ? formatLineTime(line.validUntil) : '长期有效' },
+            { key: 'lock', label: '到期策略', children: lineRequiresManualRenewal(line) ? '已锁定，需人工续期启用' : '到期后强制断开' },
+            { key: 'updated', label: '最近更新', children: formatLineTime(line.updatedAt) },
+          ]} />
         </div>
-        <div className="line-monitor-card">
-          <div className="line-monitor-title">第3段 目标访问</div>
-          <Typography.Text type="secondary">住宅代理 -&gt; 测试网站</Typography.Text>
-          <dl>
-            <dt>出站延迟</dt>
-            <dd>{formatLatency(metrics?.outboundLatencyMs)}</dd>
-            <dt>测试站点</dt>
-            <dd>www.gstatic.com</dd>
-            <dt>最近检测</dt>
-            <dd>{formatLineTime(metrics?.lastCheckedAt || line.lastCheckAt)}</dd>
-          </dl>
+        <div className="line-runtime-group">
+          <Typography.Text strong>公网入口</Typography.Text>
+          <Descriptions size="small" column={1} items={[
+            { key: 'type', label: '线路类型', children: typeLabel(line.type) },
+            { key: 'entry', label: '客户端入口', children: line.entryHost ? `${line.entryHost}:${line.entryPort}` : '--' },
+            { key: 'transport', label: isWS ? 'WS 路径' : 'Reality SNI', children: isWS ? (config.wsPath || '--') : (config.realitySni || '--') },
+            ...(isWS ? [{ key: 'nginx', label: 'Nginx 配置', children: config.nginxConfigPath || `x-ui-line-${line.id}.conf` }] : []),
+          ]} />
+        </div>
+        <div className="line-runtime-group">
+          <Typography.Text strong>Xray 与住宅出口</Typography.Text>
+          <Descriptions size="small" column={1} items={[
+            { key: 'inbound', label: '受管入站', children: `line-${line.id}-in` },
+            { key: 'localPort', label: '本地端口', children: localPort },
+            { key: 'outboundTag', label: '出站标签', children: metrics?.outboundTag || `line-${line.id}-out` },
+            { key: 'outbound', label: '住宅出口', children: outbound },
+          ]} />
+        </div>
+        <div className="line-runtime-group">
+          <Typography.Text strong>最近运行数据</Typography.Text>
+          <Descriptions size="small" column={1} items={[
+            { key: 'speed', label: '实时吞吐', children: <LineSpeedCell up={metrics?.inboundSpeedUp} down={metrics?.inboundSpeedDown} /> },
+            { key: 'traffic', label: '累计流量', children: SizeFormatter.sizeFormat(metrics?.totalTraffic) },
+            { key: 'latency', label: '出站延迟', children: formatLatency(metrics?.outboundLatencyMs) },
+            { key: 'check', label: '最近检测', children: formatLineTime(metrics?.lastCheckedAt || line.lastCheckAt) },
+          ]} />
         </div>
       </div>
     </section>
   );
 }
 
-function buildPayload(type: string, values: LineFormValues): LineSavePayload {
+function buildPayload(type: string, values: LineFormValues, includeValidity = false): LineSavePayload {
   const config: Record<string, string> = {};
   if (values.wsPath) config.wsPath = values.wsPath;
   if (values.localXrayPort) config.localXrayPort = String(values.localXrayPort);
@@ -462,9 +495,6 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
   if (values.realitySni) config.realitySni = values.realitySni;
   if (values.realityShortId) config.realityShortId = values.realityShortId;
 
-  const validFrom = values.validityRange?.[0]?.unix();
-  const validUntil = values.validityRange?.[1]?.unix();
-
   return {
     type,
     name: values.name?.trim() || typeLabel(type),
@@ -475,8 +505,7 @@ function buildPayload(type: string, values: LineFormValues): LineSavePayload {
     outboundPort: values.outboundPort ?? 0,
     outboundUsername: values.outboundUsername?.trim() || '',
     outboundPassword: values.outboundPassword || '',
-    ...(validFrom ? { validFrom } : {}),
-    ...(validUntil ? { validUntil } : {}),
+    ...(includeValidity ? { validFrom: values.validFrom?.unix() ?? dayjs().unix(), validUntil: values.validUntil?.unix() ?? 0 } : {}),
     config,
   };
 }
@@ -644,15 +673,13 @@ function LineValidityModal({
   onClose: () => void;
   onSubmit: (validUntil: number) => void;
 }) {
-  const [form] = Form.useForm<{ validUntil: Dayjs }>();
+  const [form] = Form.useForm<{ validUntil?: Dayjs }>();
   const renewing = Boolean(line && lineRequiresManualRenewal(line));
 
   useEffect(() => {
     if (!open) return;
     form.setFieldsValue({
-      validUntil: line?.validUntil && line.validUntil > Math.floor(Date.now() / 1000)
-        ? dayjs(line.validUntil * 1000)
-        : dayjs().add(30, 'day'),
+      validUntil: undefined,
     });
   }, [form, line, open]);
 
@@ -665,16 +692,13 @@ function LineValidityModal({
       cancelText="取消"
       okButtonProps={{ danger: renewing }}
       confirmLoading={saving}
-      onOk={() => void form.validateFields().then((values) => onSubmit(values.validUntil.unix()))}
+      onOk={() => void form.validateFields().then((values) => onSubmit(values.validUntil?.unix() ?? 0))}
     >
       <Form form={form} layout="vertical">
-        <Form.Item
-          label="新的结束时间"
-          name="validUntil"
-          rules={[{ required: true, message: '请选择结束时间' }]}
-        >
+        <Form.Item label="新的结束时间" name="validUntil">
           <DatePicker showTime style={{ width: '100%' }} disabledDate={(date) => date.endOf('day').isBefore(dayjs())} />
         </Form.Item>
+        <Typography.Text type="secondary">留空即设为长期有效。</Typography.Text>
         {renewing && <Alert type="warning" showIcon message="该线路已到期，确认后会重新写入 Xray 和 Nginx 配置，并恢复连接。" />}
       </Form>
     </Modal>
@@ -733,9 +757,10 @@ function LineEditor({
       entryPort: defaultEntryPort(type),
 		originPort: type === 'bunny_ws_tls' ? 8443 : undefined,
       outboundType: 'socks5',
+		validFrom: showValidity ? dayjs() : undefined,
       ...initialValues,
     });
-  }, [form, initialValues, selectedType.name, type]);
+  }, [form, initialValues, selectedType.name, showValidity, type]);
 
   const handleFinish = (values: LineFormValues) => {
     const certificateFile = certificateFiles[0]?.originFileObj;
@@ -789,9 +814,17 @@ function LineEditor({
             <Input.Password placeholder="详情页留空表示不修改" />
           </Form.Item>
 		  {showValidity && (
-			<Form.Item label="有效期（中国时间）" name="validityRange" className="line-form-grid-wide">
-			  <DatePicker.RangePicker showTime style={{ width: '100%' }} />
-			</Form.Item>
+			<>
+			  <Form.Item label="开始时间（中国时间）" name="validFrom" rules={[{ required: true, message: '请选择开始时间' }]}>
+				<DatePicker showTime style={{ width: '100%' }} disabledDate={(date) => date.endOf('minute').isBefore(dayjs())} />
+			  </Form.Item>
+			  <Form.Item label="结束时间（留空即长期）" name="validUntil" dependencies={['validFrom']} rules={[({ getFieldValue }) => ({
+				validator: async (_: unknown, value?: Dayjs) => !value || !getFieldValue('validFrom') || value.isAfter(getFieldValue('validFrom'))
+				  ? Promise.resolve() : Promise.reject(new Error('结束时间必须晚于开始时间')),
+			  })]}>
+				<DatePicker showTime style={{ width: '100%' }} disabledDate={(date) => date.endOf('minute').isBefore(dayjs())} />
+			  </Form.Item>
+			</>
 		  )}
         </div>
 
@@ -953,64 +986,47 @@ function LineTypePicker({ onSelect }: { onSelect: (type: string) => void }) {
   );
 }
 
-function LineOperations({ logs }: { logs?: LineApplyLog[] }) {
-  if (!logs?.length) return <Empty description="暂无操作记录" />;
-  return (
-    <div className="line-log-list">
-      {logs.map((log) => (
-        <div key={log.id} className="line-log-item">
-          <div className="line-log-heading">
-            <Tag color={log.level === 'error' ? 'red' : log.level === 'warning' ? 'gold' : 'blue'}>{log.action}</Tag>
-            <Typography.Text strong>{log.message}</Typography.Text>
-            <Typography.Text type="secondary">{formatLineTime(log.createdAt)}</Typography.Text>
-          </div>
-          {log.detail && <Typography.Paragraph type="secondary">{log.detail}</Typography.Paragraph>}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-type DiagnosticRow = LineApplyLog & {
-  lineId: number;
-  lineName: string;
-};
-
 function DiagnosticsPage({
   lines,
-  details,
   checking,
   onCheckAll,
   onOpenLine,
 }: {
   lines: LineProfile[];
-  details: Array<LineDetail | undefined>;
   checking: boolean;
   onCheckAll: () => void;
   onOpenLine: (id: number) => void;
 }) {
   const [lineFilter, setLineFilter] = useState('all');
+  const [kindFilter, setKindFilter] = useState('all');
   const [levelFilter, setLevelFilter] = useState('all');
-  const [selected, setSelected] = useState<DiagnosticRow | null>(null);
-  const rows = useMemo<DiagnosticRow[]>(() => details.flatMap((detail) => {
-    if (!detail) return [];
-    return (detail.logs ?? []).map((log) => ({
-      ...log,
-      lineId: detail.id,
-      lineName: detail.name || typeLabel(detail.type),
-    }));
-  }).sort((a, b) => b.createdAt - a.createdAt), [details]);
-  const filteredRows = rows.filter((row) => (lineFilter === 'all' || String(row.lineId) === lineFilter) && (levelFilter === 'all' || row.level === levelFilter));
+  const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<LineDiagnosticEvent | null>(null);
+  const diagnosticsQuery = useQuery({
+    queryKey: ['line-diagnostics', page, lineFilter, kindFilter, levelFilter],
+    queryFn: () => fetchLineDiagnostics({
+      page,
+      pageSize: 20,
+      lineId: lineFilter === 'all' ? undefined : Number(lineFilter),
+      kind: kindFilter === 'all' ? undefined : kindFilter,
+      level: levelFilter === 'all' ? undefined : levelFilter,
+    }),
+  });
   const abnormal = lines.filter((line) => line.status === 'apply_failed' || line.status === 'failed').length;
   const pending = lines.filter((line) => line.status === 'pending_apply' || line.status === 'pending_check' || line.status === 'applying').length;
   const normal = lines.filter((line) => line.status === 'active').length;
-  const columns: ColumnsType<DiagnosticRow> = [
+  const columns: ColumnsType<LineDiagnosticEvent> = [
     { title: '时间', width: 180, render: (_, row) => formatLineTime(row.createdAt) },
     { title: '线路', render: (_, row) => <button type="button" className="line-link-button" onClick={() => onOpenLine(row.lineId)}>{row.lineName}</button> },
-    { title: '检测项', dataIndex: 'action', width: 120 },
-    { title: '结果', width: 90, render: (_, row) => <Tag color={row.level === 'error' ? 'red' : row.level === 'warning' ? 'gold' : 'blue'}>{row.level === 'error' ? '异常' : row.level === 'warning' ? '警告' : '记录'}</Tag> },
+    { title: '类型', width: 130, render: (_, row) => row.kind === 'check' ? '连通性检测' : row.action },
+    { title: '结果', width: 90, render: (_, row) => <Tag color={row.level === 'error' ? 'red' : row.level === 'warning' ? 'gold' : 'blue'}>{row.level === 'error' ? '异常' : row.level === 'warning' ? '警告' : '正常'}</Tag> },
     { title: '摘要', dataIndex: 'message', render: (_, row) => <button type="button" className="diagnostic-summary-button" onClick={() => setSelected(row)}>{row.message}</button> },
   ];
+
+  const resetPage = (change: (value: string) => void) => (value: string) => {
+    setPage(1);
+    change(value);
+  };
 
   return (
     <>
@@ -1028,17 +1044,40 @@ function DiagnosticsPage({
           <span>异常线路 <strong className={abnormal ? 'diagnostic-error-count' : ''}>{abnormal}</strong></span>
         </div>
         <div className="diagnostic-filters">
-          <Select value={lineFilter} onChange={setLineFilter} options={[{ value: 'all', label: '全部线路' }, ...lines.map((line) => ({ value: String(line.id), label: line.name || typeLabel(line.type) }))]} />
-          <Select value={levelFilter} onChange={setLevelFilter} options={[{ value: 'all', label: '全部结果' }, { value: 'error', label: '异常' }, { value: 'warning', label: '警告' }, { value: 'info', label: '正常记录' }]} />
+          <Select value={lineFilter} onChange={resetPage(setLineFilter)} options={[{ value: 'all', label: '全部线路' }, ...lines.map((line) => ({ value: String(line.id), label: line.name || typeLabel(line.type) }))]} />
+          <Select value={kindFilter} onChange={resetPage(setKindFilter)} options={[{ value: 'all', label: '全部事件' }, { value: 'check', label: '连通性检测' }, { value: 'operation', label: '部署与运维' }]} />
+          <Select value={levelFilter} onChange={resetPage(setLevelFilter)} options={[{ value: 'all', label: '全部结果' }, { value: 'error', label: '异常' }, { value: 'warning', label: '警告' }, { value: 'info', label: '正常' }]} />
         </div>
-        <Table rowKey={(row) => `${row.lineId}-${row.id}`} columns={columns} dataSource={filteredRows} pagination={{ pageSize: 12 }} locale={{ emptyText: <Empty description="暂无诊断记录" /> }} />
+        <Table
+          rowKey="id"
+          columns={columns}
+          dataSource={diagnosticsQuery.data?.items ?? []}
+          loading={diagnosticsQuery.isLoading}
+          pagination={{ current: page, pageSize: 20, total: diagnosticsQuery.data?.total ?? 0, onChange: setPage, showSizeChanger: false }}
+          locale={{ emptyText: <Empty description="暂无诊断记录" /> }}
+        />
       </main>
-      <Drawer title="诊断详情" open={Boolean(selected)} onClose={() => setSelected(null)} width={480}>
+      <Drawer title="诊断详情" open={Boolean(selected)} onClose={() => setSelected(null)} width={560}>
         {selected && (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
             <div><Typography.Text type="secondary">线路</Typography.Text><br /><Typography.Text strong>{selected.lineName}</Typography.Text></div>
-            <div><Typography.Text type="secondary">检测项</Typography.Text><br /><Tag color={selected.level === 'error' ? 'red' : selected.level === 'warning' ? 'gold' : 'blue'}>{selected.action}</Tag></div>
-            <div><Typography.Text type="secondary">原因</Typography.Text><br /><Typography.Text>{selected.detail || selected.message}</Typography.Text></div>
+            <div><Typography.Text type="secondary">事件</Typography.Text><br /><Typography.Text>{selected.kind === 'check' ? '连通性检测' : selected.action}</Typography.Text></div>
+            <div><Typography.Text type="secondary">结果</Typography.Text><br /><Tag color={selected.level === 'error' ? 'red' : selected.level === 'warning' ? 'gold' : 'blue'}>{selected.message}</Tag></div>
+            {selected.kind === 'check' ? (
+              <Table
+                size="small"
+                rowKey={(item) => `${item.name}-${item.message}`}
+                pagination={false}
+                dataSource={selected.items ?? []}
+                columns={[
+                  { title: '检测项目', dataIndex: 'name', width: 130 },
+                  { title: '结果', width: 76, render: (_, item) => <Tag color={item.status === 'fail' ? 'red' : item.status === 'warn' ? 'gold' : 'green'}>{item.status === 'fail' ? '失败' : item.status === 'warn' ? '警告' : '通过'}</Tag> },
+                  { title: '详细结果', dataIndex: 'message' },
+                ]}
+              />
+            ) : (
+              <div><Typography.Text type="secondary">执行详情</Typography.Text><br /><Typography.Text>{selected.detail || selected.message}</Typography.Text></div>
+            )}
             <div><Typography.Text type="secondary">时间</Typography.Text><br /><Typography.Text>{formatLineTime(selected.createdAt)}</Typography.Text></div>
             <Button onClick={() => onOpenLine(selected.lineId)}>打开线路详情</Button>
           </Space>
@@ -1146,16 +1185,6 @@ export default function LinesPage() {
     },
     [lineMetrics, liveLineTraffic],
   );
-  const diagnosticQueries = useQueries({
-    queries: isDiagnostics
-      ? lines.map((line) => ({
-          queryKey: keys.lines.detail(line.id),
-          queryFn: () => fetchLine(line.id),
-        }))
-      : [],
-  });
-  const diagnosticDetails = diagnosticQueries.map((query) => query.data);
-
   const selectedType = useMemo(
     () => lineTypes.find((item) => item.type === currentType) ?? { type: currentType, name: typeLabel(currentType), description: '' },
     [currentType, lineTypes],
@@ -1168,7 +1197,7 @@ export default function LinesPage() {
 
   const createMutation = useMutation({
     mutationFn: async ({ values, certificateFile, privateKeyFile }: LineFormSubmission): Promise<LineApplyResult> => {
-      const saved = await createLine(buildPayload(currentType, values));
+      const saved = await createLine(buildPayload(currentType, values, true));
       if (certificateFile && privateKeyFile) {
         await uploadOriginCertificate(saved.id, certificateFile, privateKeyFile);
       }
@@ -1225,6 +1254,7 @@ export default function LinesPage() {
     mutationFn: checkLine,
     onSuccess: async (result) => {
       await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
+      await queryClient.invalidateQueries({ queryKey: ['line-diagnostics'] });
       if (result.failCount > 0) {
         message.error(`检测失败 ${result.failCount} 项`);
       } else if (result.warnCount > 0) {
@@ -1258,7 +1288,7 @@ export default function LinesPage() {
       await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
       queryClient.setQueryData(keys.lines.detail(line.id), line);
       setValidityLine(null);
-      message.success(lineRequiresManualRenewal(variables.line) ? '线路已续期并重新启用' : '有效期已延长，现有连接未中断');
+      message.success(lineRequiresManualRenewal(variables.line) ? '线路已续期并重新启用' : variables.validUntil === 0 ? '线路已设为长期有效，现有连接未中断' : '有效期已延长，现有连接未中断');
     },
     onError: (error) => message.error(error instanceof Error ? error.message : '有效期更新失败'),
   });
@@ -1267,6 +1297,7 @@ export default function LinesPage() {
     mutationFn: () => Promise.all(lines.map((line) => checkLine(line.id))),
     onSuccess: async (results) => {
       await queryClient.invalidateQueries({ queryKey: keys.lines.root() });
+      await queryClient.invalidateQueries({ queryKey: ['line-diagnostics'] });
       const failed = results.reduce((count, result) => count + result.failCount, 0);
       if (failed > 0) message.error(`全局检测完成，发现 ${failed} 项异常`);
       else message.success('全局检测完成');
@@ -1318,7 +1349,7 @@ export default function LinesPage() {
     document.body.classList.add('line-column-resizing');
 
     const onMove = (moveEvent: PointerEvent) => {
-      const width = Math.min(800, Math.max(lineColumnMinimums[key], startWidth + moveEvent.clientX - startX));
+      const width = Math.min(1100, Math.max(lineColumnMinimums[key], startWidth + moveEvent.clientX - startX));
       setColumnWidths((current) => ({ ...current, [key]: width }));
     };
     const onEnd = () => {
@@ -1400,7 +1431,7 @@ export default function LinesPage() {
     {
       title: columnTitle('有效期', 'validity'),
       width: columnWidths.validity,
-      render: (_, row) => formatLineValidity(row),
+      render: (_, row) => <span className="line-validity-cell">{formatLineValidity(row)}</span>,
     },
     {
       title: columnTitle('实时吞吐', 'speed'),
@@ -1455,7 +1486,6 @@ export default function LinesPage() {
       <LinePageShell>
         <DiagnosticsPage
           lines={lines}
-          details={diagnosticDetails}
           checking={allChecksMutation.isPending}
           onCheckAll={() => allChecksMutation.mutate()}
           onOpenLine={(id) => navigate(`/lines/${id}`)}
@@ -1523,26 +1553,8 @@ export default function LinesPage() {
           ) : (
             <>
               {lineDetail.lastError && <Alert className="line-detail-alert" type="error" showIcon message="当前线路存在异常" description={lineDetail.lastError} />}
-              <section className="line-detail-card">
-                <Typography.Title level={5}>运行状态</Typography.Title>
-                <Descriptions className="line-overview" bordered size="small" column={{ xs: 1, md: 4 }} items={[
-                  { key: 'status', label: '当前状态', children: statusTag(lineDetail.status) },
-                  { key: 'entry', label: '入口', children: lineDetail.entryHost ? `${lineDetail.entryHost}:${lineDetail.entryPort}` : '-' },
-				  { key: 'validFrom', label: '开始时间', children: lineDetail.validFrom ? formatLineTime(lineDetail.validFrom) : '立即生效' },
-				  { key: 'validUntil', label: '结束时间', children: lineDetail.validUntil ? formatLineTime(lineDetail.validUntil) : '长期有效' },
-                  { key: 'traffic', label: '累计流量', children: SizeFormatter.sizeFormat(lineDetailMetrics?.totalTraffic) },
-				  { key: 'latency', label: '出站检测延迟', children: formatLatency(lineDetailMetrics?.outboundLatencyMs) },
-                ]} />
-              </section>
+              <LineRuntimeOverview line={lineDetail} metrics={lineDetailMetrics} />
               <LineChainDiagram line={lineDetail} />
-              <LineMonitorCards line={lineDetail} metrics={lineDetailMetrics} />
-              <section className="line-detail-card">
-                <div className="line-detail-section-heading">
-                  <Typography.Title level={5}>检测记录</Typography.Title>
-                  <Button icon={<CheckCircleOutlined />} loading={checkMutation.isPending} onClick={() => runCheck(lineId)}>重新检测</Button>
-                </div>
-                <LineOperations logs={lineDetail.logs} />
-              </section>
             </>
           )}
         </main>
