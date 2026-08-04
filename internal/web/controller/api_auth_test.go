@@ -60,6 +60,9 @@ func newAPIAuthTestEngine(t *testing.T) (*gin.Engine, *APIController) {
 	api.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"api_authed": c.GetBool("api_authed")})
 	})
+	api.GET("/central/capabilities", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"central_read_only": c.GetBool("central_read_only")})
+	})
 	return engine, a
 }
 
@@ -88,6 +91,45 @@ func TestCheckAPIAuth_BearerSuccess(t *testing.T) {
 	}
 	if got := w.Body.String(); got != `{"api_authed":true}` {
 		t.Fatalf("body = %s, want api_authed true", got)
+	}
+}
+
+func TestCheckAPIAuth_CentralTokenOnlyReachesCentralRoutes(t *testing.T) {
+	engine, _ := newAPIAuthTestEngine(t)
+	const centralToken = "central-read-only-token"
+	if err := database.GetDB().Create(&model.CentralAccessToken{
+		Name: "central", TokenHash: crypto.HashTokenSHA256(centralToken), Enabled: true,
+	}).Error; err != nil {
+		t.Fatalf("seed central token: %v", err)
+	}
+
+	centralReq := httptest.NewRequest(http.MethodGet, "/panel/api/central/capabilities", nil)
+	centralReq.Header.Set("Authorization", "Bearer "+centralToken)
+	centralW := httptest.NewRecorder()
+	engine.ServeHTTP(centralW, centralReq)
+	if centralW.Code != http.StatusOK || centralW.Body.String() != `{"central_read_only":true}` {
+		t.Fatalf("central token response = %d %s", centralW.Code, centralW.Body.String())
+	}
+
+	ordinaryReq := httptest.NewRequest(http.MethodGet, "/panel/api/ping", nil)
+	ordinaryReq.Header.Set("Authorization", "Bearer "+centralToken)
+	ordinaryReq.Header.Set("X-Requested-With", "XMLHttpRequest")
+	ordinaryW := httptest.NewRecorder()
+	engine.ServeHTTP(ordinaryW, ordinaryReq)
+	if ordinaryW.Code != http.StatusUnauthorized {
+		t.Fatalf("central token reached ordinary API: status = %d", ordinaryW.Code)
+	}
+
+	fullToken := "ordinary-api-token"
+	if err := database.GetDB().Create(&model.ApiToken{Name: "ordinary", Token: crypto.HashTokenSHA256(fullToken), Enabled: true}).Error; err != nil {
+		t.Fatalf("seed ordinary token: %v", err)
+	}
+	fullReq := httptest.NewRequest(http.MethodGet, "/panel/api/central/capabilities", nil)
+	fullReq.Header.Set("Authorization", "Bearer "+fullToken)
+	fullW := httptest.NewRecorder()
+	engine.ServeHTTP(fullW, fullReq)
+	if fullW.Code != http.StatusForbidden {
+		t.Fatalf("ordinary token reached central API: status = %d", fullW.Code)
 	}
 }
 

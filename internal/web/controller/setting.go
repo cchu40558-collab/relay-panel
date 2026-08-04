@@ -45,11 +45,12 @@ type validateRegexForm struct {
 
 // SettingController handles settings and user management operations.
 type SettingController struct {
-	settingService  service.SettingService
-	userService     panel.UserService
-	panelService    panel.PanelService
-	apiTokenService panel.ApiTokenService
-	xrayService     service.XrayService
+	settingService       service.SettingService
+	userService          panel.UserService
+	panelService         panel.PanelService
+	apiTokenService      panel.ApiTokenService
+	centralAccessService panel.CentralAccessService
+	xrayService          service.XrayService
 }
 
 // NewSettingController creates a new SettingController and initializes its routes.
@@ -75,6 +76,10 @@ func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/apiTokens/create", a.createApiToken)
 	g.POST("/apiTokens/delete/:id", a.deleteApiToken)
 	g.POST("/apiTokens/setEnabled/:id", a.setApiTokenEnabled)
+	g.GET("/centralAccessTokens", a.listCentralAccessTokens)
+	g.POST("/centralAccessTokens/create", a.createCentralAccessToken)
+	g.POST("/centralAccessTokens/delete/:id", a.deleteCentralAccessToken)
+	g.POST("/centralAccessTokens/setEnabled/:id", a.setCentralAccessTokenEnabled)
 	g.POST("/testSmtp", a.testSmtp)
 	g.POST("/testTgBot", a.testTgBot)
 }
@@ -267,6 +272,44 @@ func (a *SettingController) setApiTokenEnabled(c *gin.Context) {
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.apiTokenService.SetEnabled(id, form.Enabled))
+}
+
+func (a *SettingController) listCentralAccessTokens(c *gin.Context) {
+	rows, err := a.centralAccessService.List()
+	jsonObj(c, rows, err)
+}
+
+func (a *SettingController) createCentralAccessToken(c *gin.Context) {
+	form := &apiTokenCreateForm{}
+	if err := c.ShouldBind(form); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+		return
+	}
+	row, err := a.centralAccessService.Create(form.Name)
+	jsonObj(c, row, err)
+}
+
+func (a *SettingController) deleteCentralAccessToken(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.centralAccessService.Delete(id))
+}
+
+func (a *SettingController) setCentralAccessTokenEnabled(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+		return
+	}
+	form := &apiTokenEnabledForm{}
+	if err := c.ShouldBind(form); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.centralAccessService.SetEnabled(id, form.Enabled))
 }
 
 func (a *SettingController) testSmtp(c *gin.Context) {

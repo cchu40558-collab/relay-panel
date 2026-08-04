@@ -162,6 +162,19 @@ type ApiToken struct {
 	CreatedAt int64  `json:"createdAt" gorm:"autoCreateTime"`
 }
 
+// CentralAccessToken is a deliberately restricted credential for a Relay Panel
+// central site. It must never authenticate ordinary /panel/api routes.
+type CentralAccessToken struct {
+	Id         int    `json:"id" gorm:"primaryKey;autoIncrement"`
+	Name       string `json:"name" gorm:"uniqueIndex;not null"`
+	TokenHash  string `json:"-" gorm:"uniqueIndex;not null;size:64"`
+	Enabled    bool   `json:"enabled" gorm:"default:true"`
+	CreatedAt  int64  `json:"createdAt" gorm:"autoCreateTime"`
+	LastUsedAt int64  `json:"lastUsedAt" gorm:"default:0"`
+	LastUsedIP string `json:"lastUsedIp" gorm:"size:64"`
+	RevokedAt  int64  `json:"revokedAt" gorm:"default:0"`
+}
+
 // MarshalJSON emits settings, streamSettings, and sniffing as nested JSON
 // objects rather than escaped strings, so API consumers don't need to JSON.parse
 // a string inside a string. Empty fields render as null; fields whose stored

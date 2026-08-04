@@ -153,6 +153,28 @@ export const sections: readonly Section[] = [
   },
 
   {
+    id: 'line-operations',
+    title: 'Line Operations',
+    description: 'Additional line monitoring, validity, sharing, certificate, and deletion endpoints used by the Relay Panel line UI.',
+    endpoints: [
+      { method: 'GET', path: '/panel/api/lines/', summary: 'Alias for GET /panel/api/lines.' },
+      { method: 'GET', path: '/panel/api/lines/metrics', summary: 'Return the latest traffic, throughput, and latency metrics for every line.' },
+      { method: 'GET', path: '/panel/api/lines/diagnostics', summary: 'Return paginated line diagnostic events. Supports lineId, page, pageSize, kind, and level query filters.' },
+      { method: 'GET', path: '/panel/api/lines/:id/metrics', summary: 'Return the latest traffic and latency metrics for one line.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'GET', path: '/panel/api/lines/:id/share', summary: 'Return share metadata for a line, including the managed Clash subscription when available.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'GET', path: '/panel/api/lines/:id/clash-subscription', summary: 'Return managed Clash subscription metadata for a line.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'GET', path: '/panel/api/lines/:id/clash-subscription/yaml', summary: 'Download the generated Mihomo-compatible YAML subscription for a line.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/check', summary: 'Run the line health check and record its result.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/origin-certificate', summary: 'Upload a Cloudflare origin certificate for the line.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }, { name: 'certificate', in: 'body (multipart)', type: 'file', desc: 'Certificate file.' }, { name: 'privateKey', in: 'body (multipart)', type: 'file', desc: 'Private key file.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/validity', summary: 'Change a line validity end time; an empty end time means long-term.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/renew', summary: 'Extend a line validity period and re-enable it when allowed.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/delete', summary: 'Delete one managed line and its generated resources.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+      { method: 'POST', path: '/panel/api/lines/batch-delete', summary: 'Delete multiple managed lines.', params: [{ name: 'ids', in: 'body', type: 'integer[]', desc: 'Line IDs to delete.' }] },
+      { method: 'POST', path: '/panel/api/lines/:id/clash-subscription/reset', summary: 'Rotate the opaque managed Clash subscription token for one line.', params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Line id.' }] },
+    ],
+  },
+
+  {
     id: 'inbounds',
     title: 'Inbounds',
     description:
@@ -1319,6 +1341,61 @@ export const sections: readonly Section[] = [
         ],
         body: '{\n  "enabled": false\n}',
         response: '{\n  "success": true\n}',
+      },
+    ],
+  },
+
+  {
+    id: 'central-access',
+    title: 'Central Site Access',
+    description:
+      'Restricted credentials and read-only endpoints for a Relay Panel central site. A central token cannot call ordinary panel APIs, change lines, restart Xray, or read secrets. The plaintext token is returned once, at creation only.',
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/panel/api/setting/centralAccessTokens',
+        summary: 'List central-site read-only token metadata. Token plaintext and token hashes are never returned.',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/setting/centralAccessTokens/create',
+        summary: 'Create a restricted central-site token. The token plaintext is returned only in this response.',
+        params: [{ name: 'name', in: 'body', type: 'string', desc: 'Unique token label, up to 64 characters.' }],
+        body: '{\n  "name": "relay-central"\n}',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/setting/centralAccessTokens/delete/:id',
+        summary: 'Permanently revoke and delete a central-site token.',
+        params: [{ name: 'id', in: 'path', type: 'integer', desc: 'Token row ID.' }],
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/setting/centralAccessTokens/setEnabled/:id',
+        summary: 'Enable or disable a central-site token without deleting its record.',
+        params: [
+          { name: 'id', in: 'path', type: 'integer', desc: 'Token row ID.' },
+          { name: 'enabled', in: 'body', type: 'boolean', desc: 'New enabled state.' },
+        ],
+        body: '{\n  "enabled": false\n}',
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/central/capabilities',
+        summary: 'Return the Relay Panel node identity and central protocol capabilities. Requires a central-site read-only token.',
+        params: [{ name: 'Authorization', in: 'header', type: 'string', desc: 'Bearer central-site read-only token.' }],
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/central/summary',
+        summary: 'Return panel version, Xray state, line health counts, and aggregate line traffic. Requires a central-site read-only token.',
+        params: [{ name: 'Authorization', in: 'header', type: 'string', desc: 'Bearer central-site read-only token.' }],
+      },
+      {
+        method: 'GET',
+        path: '/panel/api/central/lines',
+        summary: 'Return safe read-only line summaries and metrics. It intentionally omits hosts, ports, UUIDs, credentials, certificates, and subscription links.',
+        params: [{ name: 'Authorization', in: 'header', type: 'string', desc: 'Bearer central-site read-only token.' }],
       },
     ],
   },

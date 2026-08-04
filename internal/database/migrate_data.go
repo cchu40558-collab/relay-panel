@@ -42,6 +42,7 @@ func migrationModels() []any {
 		&model.HistoryOfSeeders{},
 		&model.Node{},
 		&model.ApiToken{},
+		&model.CentralAccessToken{},
 		&model.Inbound{},
 		&xray.ClientTraffic{},
 		&model.OutboundTraffics{},

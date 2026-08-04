@@ -12,7 +12,7 @@ import {
   Tabs,
   message,
 } from 'antd';
-import { ApiOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
+import { ApiOutlined, CloudServerOutlined, SafetyOutlined, UserOutlined } from '@ant-design/icons';
 import { ClipboardManager, HttpUtil, IntlUtil, RandomUtil } from '@/utils';
 import type { AllSetting } from '@/models/setting';
 import { SettingListItem } from '@/components/ui';
@@ -32,6 +32,11 @@ interface ApiTokenRow {
   name: string;
   enabled: boolean;
   createdAt: number;
+}
+
+interface CentralAccessTokenRow extends ApiTokenRow {
+  lastUsedAt: number;
+  lastUsedIp: string;
 }
 
 interface SecurityTabProps {
@@ -87,6 +92,12 @@ export default function SecurityTab({ allSetting, updateSetting, saveSetting }: 
   const [createName, setCreateName] = useState('');
   const [creating, setCreating] = useState(false);
   const [createdToken, setCreatedToken] = useState<{ name: string; token: string } | null>(null);
+  const [centralTokens, setCentralTokens] = useState<CentralAccessTokenRow[]>([]);
+  const [centralTokensLoading, setCentralTokensLoading] = useState(false);
+  const [centralCreateOpen, setCentralCreateOpen] = useState(false);
+  const [centralCreateName, setCentralCreateName] = useState('relay-central');
+  const [centralCreating, setCentralCreating] = useState(false);
+  const [createdCentralToken, setCreatedCentralToken] = useState<{ name: string; token: string } | null>(null);
 
   const openTfa = useCallback((opts: Omit<TfaState, 'open'>) => {
     setTfa({ ...opts, open: true });
@@ -141,9 +152,22 @@ export default function SecurityTab({ allSetting, updateSetting, saveSetting }: 
   }, []);
 
   useEffect(() => {
-     
     loadApiTokens();
   }, [loadApiTokens]);
+
+  const loadCentralTokens = useCallback(async () => {
+    setCentralTokensLoading(true);
+    try {
+      const msg = await HttpUtil.get('/panel/api/setting/centralAccessTokens') as ApiMsg<CentralAccessTokenRow[]>;
+      if (msg?.success) setCentralTokens(Array.isArray(msg.obj) ? msg.obj : []);
+    } finally {
+      setCentralTokensLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCentralTokens();
+  }, [loadCentralTokens]);
 
   async function copyToken(token: string) {
     if (!token) return;
@@ -204,6 +228,52 @@ export default function SecurityTab({ allSetting, updateSetting, saveSetting }: 
   function formatTokenDate(ts: number): string {
     if (!ts) return '';
     return IntlUtil.formatDate(apiTokenCreatedAtMilliseconds(ts));
+  }
+
+  function openCentralCreateModal() {
+    setCentralCreateName('relay-central');
+    setCentralCreateOpen(true);
+  }
+
+  async function confirmCreateCentralToken() {
+    const name = centralCreateName.trim();
+    if (!name) {
+      messageApi.error('令牌名称不能为空');
+      return;
+    }
+    setCentralCreating(true);
+    try {
+      const msg = await HttpUtil.post('/panel/api/setting/centralAccessTokens/create', { name }) as ApiMsg<{ token?: string }>;
+      if (msg?.success) {
+        setCentralCreateOpen(false);
+        await loadCentralTokens();
+        if (msg.obj?.token) setCreatedCentralToken({ name, token: msg.obj.token });
+      }
+    } finally {
+      setCentralCreating(false);
+    }
+  }
+
+  async function toggleCentralTokenEnabled(row: CentralAccessTokenRow) {
+    const enabled = !row.enabled;
+    const msg = await HttpUtil.post(`/panel/api/setting/centralAccessTokens/setEnabled/${row.id}`, { enabled }) as ApiMsg;
+    if (msg?.success) {
+      setCentralTokens((prev) => prev.map((item) => (item.id === row.id ? { ...item, enabled } : item)));
+    }
+  }
+
+  function confirmDeleteCentralToken(row: CentralAccessTokenRow) {
+    modal.confirm({
+      title: `删除总站令牌“${row.name}”？`,
+      content: '删除后，使用该令牌的总站将立即无法读取本子站状态。',
+      okText: t('delete'),
+      cancelText: t('cancel'),
+      okType: 'danger',
+      onOk: async () => {
+        const msg = await HttpUtil.post(`/panel/api/setting/centralAccessTokens/delete/${row.id}`) as ApiMsg;
+        if (msg?.success) await loadCentralTokens();
+      },
+    });
   }
 
   function toggleTwoFactor() {
@@ -331,6 +401,45 @@ export default function SecurityTab({ allSetting, updateSetting, saveSetting }: 
             </div>
           ),
         },
+        {
+          key: '4',
+          label: catTabLabel(<CloudServerOutlined />, '总站接入', isMobile),
+          children: (
+            <div className="api-token-section">
+              <div className="api-token-header">
+                <p className="api-token-hint">仅允许总站读取本子站状态与线路摘要，不能修改线路或系统设置。</p>
+                <Button type="primary" size="small" onClick={openCentralCreateModal}>
+                  + 生成总站只读令牌
+                </Button>
+              </div>
+              <Spin spinning={centralTokensLoading}>
+                {!centralTokens.length && !centralTokensLoading && (
+                  <Empty description="尚未生成总站令牌" />
+                )}
+                {centralTokens.map((row) => (
+                  <div key={row.id} className={`api-token-row${row.enabled ? '' : ' disabled'}`}>
+                    <div className="api-token-row-head">
+                      <div className="api-token-name-wrap">
+                        <span className="api-token-name">{row.name}</span>
+                        <span className="api-token-created">
+                          创建于 {formatTokenDate(row.createdAt)}
+                          {row.lastUsedAt ? ` · 最近使用 ${formatTokenDate(row.lastUsedAt)}` : ' · 尚未使用'}
+                          {row.lastUsedIp ? ` · ${row.lastUsedIp}` : ''}
+                        </span>
+                      </div>
+                      <div className="api-token-actions">
+                        <Switch size="small" checked={row.enabled} onChange={() => toggleCentralTokenEnabled(row)} />
+                        <Button size="small" danger type="text" onClick={() => confirmDeleteCentralToken(row)}>
+                          {t('delete')}
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </Spin>
+            </div>
+          ),
+        },
       ]} />
 
       <Modal
@@ -353,6 +462,46 @@ export default function SecurityTab({ allSetting, updateSetting, saveSetting }: 
             />
           </Form.Item>
         </Form>
+      </Modal>
+
+      <Modal
+        open={centralCreateOpen}
+        title="生成总站只读令牌"
+        confirmLoading={centralCreating}
+        okText="生成"
+        cancelText={t('cancel')}
+        onOk={confirmCreateCentralToken}
+        onCancel={() => setCentralCreateOpen(false)}
+      >
+        <p className="api-token-created-notice">该令牌只允许总站读取状态和线路摘要。创建后仅显示一次。</p>
+        <Form layout="vertical">
+          <Form.Item label="名称" required>
+            <Input
+              value={centralCreateName}
+              maxLength={64}
+              placeholder="例如 relay-central"
+              onChange={(e) => setCentralCreateName(e.target.value)}
+              onPressEnter={confirmCreateCentralToken}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={!!createdCentralToken}
+        title="总站只读令牌已生成"
+        okText={t('done')}
+        onOk={() => setCreatedCentralToken(null)}
+        onCancel={() => setCreatedCentralToken(null)}
+        cancelButtonProps={{ style: { display: 'none' } }}
+      >
+        <p className="api-token-created-notice">请立即复制并填入总站。该令牌不会以可读形式保存，也不会再次显示。</p>
+        <div className="api-token-value-wrap">
+          <code className="api-token-value">{createdCentralToken?.token}</code>
+          <Button size="small" type="primary" onClick={() => createdCentralToken && copyToken(createdCentralToken.token)}>
+            {t('copy')}
+          </Button>
+        </div>
       </Modal>
 
       <Modal

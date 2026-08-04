@@ -24,6 +24,7 @@ type APIController struct {
 	xraySettingController *XraySettingController
 	userService           panel.UserService
 	apiTokenService       panel.ApiTokenService
+	centralAccessService  panel.CentralAccessService
 	Tgbot                 tgbot.Tgbot
 }
 
@@ -35,6 +36,22 @@ func NewAPIController(g *gin.RouterGroup) *APIController {
 }
 
 func (a *APIController) checkAPIAuth(c *gin.Context) {
+	if isCentralReadOnlyPath(c.Request.URL.Path) {
+		if c.Request.Method != http.MethodGet {
+			c.AbortWithStatus(http.StatusMethodNotAllowed)
+			return
+		}
+		if token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer "); ok && a.centralAccessService.MatchAndRecord(token, c.ClientIP()) {
+			c.Set("central_read_only", true)
+			c.Next()
+			return
+		}
+		// These endpoints deliberately do not accept the ordinary all-admin API
+		// token or an interactive panel session. A central site needs a distinct,
+		// revocable read-only credential.
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
 	// A verified client certificate (a completed mTLS handshake) authenticates
 	// the caller, equivalent to a valid bearer token. api_authed must be set so
 	// the CSRF middleware lets cert-authed mutations through.
@@ -104,6 +121,10 @@ func (a *APIController) initRouter(g *gin.RouterGroup) {
 	// Simplified line deployment API.
 	a.lineController = NewLineController(api)
 
+	// Narrow, central-site-only read API. Its own middleware verifies the
+	// dedicated central credential after checkAPIAuth marks the request.
+	NewCentralController(api)
+
 	// Settings + Xray config management live under the API surface too, so the
 	// same API token drives them. Paths are /panel/api/setting/* and
 	// /panel/api/xray/*.
@@ -112,6 +133,15 @@ func (a *APIController) initRouter(g *gin.RouterGroup) {
 
 	// Extra routes
 	api.POST("/backuptotgbot", a.BackuptoTgbot)
+}
+
+func isCentralReadOnlyPath(path string) bool {
+	switch path {
+	case "/panel/api/central/capabilities", "/panel/api/central/summary", "/panel/api/central/lines":
+		return true
+	default:
+		return false
+	}
 }
 
 // BackuptoTgbot sends a backup of the panel data to Telegram bot admins.
