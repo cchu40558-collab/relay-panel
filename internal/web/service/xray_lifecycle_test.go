@@ -66,3 +66,22 @@ func TestXrayLifecycleConcurrentStatusResultAndTrafficReads(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestCurrentXrayStatusDoesNotUseCachedServerStatus(t *testing.T) {
+	previousProcess, previousResult := xrayState.snapshot()
+	t.Cleanup(func() {
+		xrayState.mu.Lock()
+		xrayState.process = previousProcess
+		xrayState.result = previousResult
+		xrayState.mu.Unlock()
+	})
+	xrayState.replace(nil)
+
+	service := ServerService{lastStatus: &Status{}}
+	service.lastStatus.Xray.State = Running // A stale dashboard sample must not affect this result.
+
+	state, message := service.CurrentXrayStatus()
+	if state != Stop || message != "" {
+		t.Fatalf("CurrentXrayStatus = (%q, %q), want (%q, %q)", state, message, Stop, "")
+	}
+}

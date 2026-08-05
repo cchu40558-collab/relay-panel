@@ -194,6 +194,19 @@ func (s *ServerService) LastStatus() *Status {
 	return s.lastStatus
 }
 
+// CurrentXrayStatus reads the Xray process directly. It is intentionally
+// independent from LastStatus so callers that do not drive the dashboard's
+// status polling, such as the central-site read API, still receive live data.
+func (s *ServerService) CurrentXrayStatus() (ProcessState, string) {
+	if s.xrayService.IsXrayRunning() {
+		return Running, ""
+	}
+	if err := s.xrayService.GetXrayErr(); err != nil {
+		return Error, s.xrayService.GetXrayResult()
+	}
+	return Stop, s.xrayService.GetXrayResult()
+}
+
 // Fail2banStatus tells the frontend whether the per-client IP limit can
 // actually be enforced. Enforcement depends on fail2ban, so a limit set
 // without it would silently do nothing.
@@ -597,18 +610,7 @@ func (s *ServerService) GetStatus(lastStatus *Status) *Status {
 	status.PublicIP.IPv6 = s.cachedIPv6
 
 	// Xray status
-	if s.xrayService.IsXrayRunning() {
-		status.Xray.State = Running
-		status.Xray.ErrorMsg = ""
-	} else {
-		err := s.xrayService.GetXrayErr()
-		if err != nil {
-			status.Xray.State = Error
-		} else {
-			status.Xray.State = Stop
-		}
-		status.Xray.ErrorMsg = s.xrayService.GetXrayResult()
-	}
+	status.Xray.State, status.Xray.ErrorMsg = s.CurrentXrayStatus()
 	status.Xray.Version = s.xrayService.GetXrayVersion()
 	status.PanelVersion = config.GetPanelVersion()
 	if guid, err := s.settingService.GetPanelGuid(); err == nil {

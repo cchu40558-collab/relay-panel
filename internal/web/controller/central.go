@@ -76,11 +76,7 @@ func (a *CentralController) summary(c *gin.Context) {
 		}
 	}
 	healthy, abnormal, expired := centralLineCounts(lines)
-	xrayState, xrayError := "unknown", ""
-	if status := a.serverService.LastStatus(); status != nil {
-		xrayState = string(status.Xray.State)
-		xrayError = status.Xray.ErrorMsg
-	}
+	xrayState, xrayError := a.serverService.CurrentXrayStatus()
 
 	jsonObj(c, gin.H{
 		"centralProtocolVersion": centralProtocolVersion,
