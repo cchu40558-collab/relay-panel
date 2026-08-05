@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v3/internal/database"
 	"github.com/mhsanaei/3x-ui/v3/internal/database/model"
+	"github.com/mhsanaei/3x-ui/v3/internal/logger"
 )
 
 const (
@@ -131,12 +133,13 @@ func (s *CentralManagementService) Apply(req CentralManagementRequest, certifica
 		return nil, err
 	}
 	if err := probeCentralManagementListener(req.Port); err != nil {
+		readinessErr := fmt.Errorf("central management listener did not become ready: %w; %s", err, centralManagementReadinessDiagnostics(req.Port))
 		rollbackErr := restoreCentralManagementNginxConfig(previousNginx, osNginxExecutor{})
-		s.recordError(err)
+		s.recordError(readinessErr)
 		if rollbackErr != nil {
-			return nil, fmt.Errorf("central management listener probe failed: %w; rollback failed: %v", err, rollbackErr)
+			return nil, fmt.Errorf("%w; rollback failed: %v", readinessErr, rollbackErr)
 		}
-		return nil, fmt.Errorf("central management listener probe failed; previous Nginx configuration restored: %w", err)
+		return nil, fmt.Errorf("%w; previous Nginx configuration restored", readinessErr)
 	}
 	if err := allowCentralManagementFirewallPort(req.Port); err != nil {
 		rollbackErr := restoreCentralManagementNginxConfig(previousNginx, osNginxExecutor{})
@@ -379,12 +382,67 @@ func reloadNginx(executor nginxExecutor) error {
 	return nil
 }
 
+type centralManagementDialFunc func(network, address string, timeout time.Duration) (net.Conn, error)
+
 func probeCentralManagementListener(port int) error {
-	connection, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 3*time.Second)
-	if err != nil {
-		return err
+	return waitForCentralManagementListener(
+		net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		time.Now().Add(3*time.Second),
+		net.DialTimeout,
+		time.Now,
+		time.Sleep,
+	)
+}
+
+// waitForCentralManagementListener confirms the new Nginx listener is ready.
+// A reload signal may return before Nginx has opened a new port, so only an
+// ECONNREFUSED is considered a short-lived pending state. Other network errors
+// are meaningful failures and must not be hidden behind retries.
+func waitForCentralManagementListener(address string, deadline time.Time, dial centralManagementDialFunc, now func() time.Time, sleep func(time.Duration)) error {
+	const (
+		attemptTimeout = 300 * time.Millisecond
+		retryInterval  = 100 * time.Millisecond
+	)
+	var (
+		attempts int
+		lastErr  error
+	)
+	for {
+		attempts++
+		connection, err := dial("tcp", address, attemptTimeout)
+		if err == nil {
+			return connection.Close()
+		}
+		if !errors.Is(err, syscall.ECONNREFUSED) {
+			return fmt.Errorf("connect %s failed on attempt %d: %w", address, attempts, err)
+		}
+		lastErr = err
+		current := now()
+		if !current.Before(deadline) {
+			return fmt.Errorf("%s was not ready after %d connection attempts: %w", address, attempts, lastErr)
+		}
+		wait := retryInterval
+		if remaining := deadline.Sub(current); remaining < wait {
+			wait = remaining
+		}
+		sleep(wait)
 	}
-	return connection.Close()
+}
+
+// centralManagementReadinessDiagnostics deliberately returns only state flags.
+// Full Nginx output can contain the random management path and must not be
+// persisted in the database or sent back to the browser.
+func centralManagementReadinessDiagnostics(port int) string {
+	portToken := fmt.Sprintf(":%d", port)
+	listeners, listenersErr := runCommandOutput("ss", "-ltn")
+	portListening := listenersErr == nil && strings.Contains(listeners, portToken)
+	effectiveConfig, configErr := runCommandOutput("nginx", "-T")
+	configIncludesPort := configErr == nil && strings.Contains(effectiveConfig, fmt.Sprintf("listen %d", port))
+	nginxState, stateErr := runCommandOutput("systemctl", "is-active", "nginx")
+	nginxActive := stateErr == nil && strings.TrimSpace(nginxState) == "active"
+	summary := fmt.Sprintf("readiness diagnostics: port_listening=%t nginx_config_includes_port=%t nginx_active=%t", portListening, configIncludesPort, nginxActive)
+	logger.Warning("central management", summary)
+	return summary
 }
 
 func allowCentralManagementFirewallPort(port int) error {

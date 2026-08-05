@@ -2,8 +2,11 @@ package service
 
 import (
 	"errors"
+	"net"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestNormalizeCentralManagementDomain(t *testing.T) {
@@ -75,5 +78,61 @@ func TestCloudflareHTTPSPorts(t *testing.T) {
 		if isCloudflareHTTPSPort(port) {
 			t.Errorf("port %d should be rejected", port)
 		}
+	}
+}
+
+func TestWaitForCentralManagementListenerRetriesOnlyConnectionRefused(t *testing.T) {
+	start := time.Unix(1700000000, 0)
+	now := start
+	var sleeps []time.Duration
+	attempt := 0
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	err := waitForCentralManagementListener("127.0.0.1:2083", start.Add(time.Second), func(_, _ string, _ time.Duration) (net.Conn, error) {
+		attempt++
+		if attempt < 3 {
+			return nil, syscall.ECONNREFUSED
+		}
+		return client, nil
+	}, func() time.Time { return now }, func(d time.Duration) { sleeps = append(sleeps, d); now = now.Add(d) })
+	if err != nil {
+		t.Fatalf("wait error: %v", err)
+	}
+	if attempt != 3 || len(sleeps) != 2 {
+		t.Fatalf("attempts=%d sleeps=%v, want 3 attempts and 2 retries", attempt, sleeps)
+	}
+}
+
+func TestWaitForCentralManagementListenerFailsImmediatelyForOtherErrors(t *testing.T) {
+	start := time.Unix(1700000000, 0)
+	attempt := 0
+	sleeps := 0
+	err := waitForCentralManagementListener("127.0.0.1:2083", start.Add(time.Second), func(_, _ string, _ time.Duration) (net.Conn, error) {
+		attempt++
+		return nil, syscall.EACCES
+	}, func() time.Time { return start }, func(time.Duration) { sleeps++ })
+	if !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("error = %v, want EACCES", err)
+	}
+	if attempt != 1 || sleeps != 0 {
+		t.Fatalf("attempts=%d sleeps=%d, want immediate failure", attempt, sleeps)
+	}
+}
+
+func TestWaitForCentralManagementListenerTimesOutWithConnectionRefused(t *testing.T) {
+	start := time.Unix(1700000000, 0)
+	now := start
+	attempt := 0
+	err := waitForCentralManagementListener("127.0.0.1:2083", start.Add(200*time.Millisecond), func(_, _ string, _ time.Duration) (net.Conn, error) {
+		attempt++
+		return nil, syscall.ECONNREFUSED
+	}, func() time.Time { return now }, func(d time.Duration) { now = now.Add(d) })
+	if !errors.Is(err, syscall.ECONNREFUSED) || !strings.Contains(err.Error(), "3 connection attempts") {
+		t.Fatalf("error = %v, want bounded refused timeout", err)
+	}
+	if attempt != 3 {
+		t.Fatalf("attempts=%d, want 3", attempt)
 	}
 }
