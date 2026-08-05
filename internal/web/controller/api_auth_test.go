@@ -7,6 +7,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gin-contrib/sessions"
@@ -26,6 +27,10 @@ import (
 // its service fields (they query the global DB), so this exercises the real
 // auth path. A fresh temp DB is initialised per test.
 func newAPIAuthTestEngine(t *testing.T) (*gin.Engine, *APIController) {
+	return newAPIAuthTestEngineAtBasePath(t, "/")
+}
+
+func newAPIAuthTestEngineAtBasePath(t *testing.T, basePath string) (*gin.Engine, *APIController) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	dbDir := t.TempDir()
@@ -35,6 +40,7 @@ func newAPIAuthTestEngine(t *testing.T) (*gin.Engine, *APIController) {
 	}
 	t.Cleanup(func() { _ = database.CloseDB() })
 	engine := gin.New()
+	engine.Use(func(c *gin.Context) { c.Set("base_path", basePath) })
 	store := cookie.NewStore([]byte("api-auth-test-secret"))
 	engine.Use(sessions.Sessions("3x-ui", store))
 
@@ -55,7 +61,7 @@ func newAPIAuthTestEngine(t *testing.T) (*gin.Engine, *APIController) {
 		c.Status(http.StatusOK)
 	})
 
-	api := engine.Group("/panel/api")
+	api := engine.Group(strings.TrimRight(basePath, "/") + "/panel/api")
 	api.Use(a.checkAPIAuth)
 	api.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"api_authed": c.GetBool("api_authed")})
@@ -130,6 +136,65 @@ func TestCheckAPIAuth_CentralTokenOnlyReachesCentralRoutes(t *testing.T) {
 	engine.ServeHTTP(fullW, fullReq)
 	if fullW.Code != http.StatusForbidden {
 		t.Fatalf("ordinary token reached central API: status = %d", fullW.Code)
+	}
+}
+
+func TestCheckAPIAuth_CentralTokenWorksBehindRandomBasePath(t *testing.T) {
+	const basePath = "/otJusMQxf1caAFzjHk7pVC/"
+	engine, _ := newAPIAuthTestEngineAtBasePath(t, basePath)
+	const centralToken = "central-random-base-token"
+	if err := database.GetDB().Create(&model.CentralAccessToken{
+		Name: "central-random", TokenHash: crypto.HashTokenSHA256(centralToken), Enabled: true,
+	}).Error; err != nil {
+		t.Fatalf("seed central token: %v", err)
+	}
+
+	centralReq := httptest.NewRequest(http.MethodGet, basePath+"panel/api/central/capabilities", nil)
+	centralReq.Header.Set("Authorization", "Bearer "+centralToken)
+	centralW := httptest.NewRecorder()
+	engine.ServeHTTP(centralW, centralReq)
+	if centralW.Code != http.StatusOK || centralW.Body.String() != `{"central_read_only":true}` {
+		t.Fatalf("central token response = %d %s", centralW.Code, centralW.Body.String())
+	}
+
+	ordinaryReq := httptest.NewRequest(http.MethodGet, basePath+"panel/api/ping", nil)
+	ordinaryReq.Header.Set("Authorization", "Bearer "+centralToken)
+	ordinaryReq.Header.Set("X-Requested-With", "XMLHttpRequest")
+	ordinaryW := httptest.NewRecorder()
+	engine.ServeHTTP(ordinaryW, ordinaryReq)
+	if ordinaryW.Code != http.StatusUnauthorized {
+		t.Fatalf("central token reached ordinary API: status = %d", ordinaryW.Code)
+	}
+}
+
+func TestIsCentralReadOnlyPath(t *testing.T) {
+	basePath := "/otJusMQxf1caAFzjHk7pVC/"
+	for _, path := range []string{
+		"/panel/api/central/capabilities",
+		"/panel/api/central/summary",
+		"/panel/api/central/lines",
+	} {
+		if !isCentralReadOnlyPath(path, "/") {
+			t.Errorf("root path %q should be central read-only", path)
+		}
+	}
+	for _, path := range []string{
+		basePath + "panel/api/central/capabilities",
+		basePath + "panel/api/central/summary",
+		basePath + "panel/api/central/lines",
+	} {
+		if !isCentralReadOnlyPath(path, basePath) {
+			t.Errorf("path %q should be central read-only", path)
+		}
+	}
+	for _, path := range []string{
+		"/otJusMQxf1caAFzjHk7pVCx/panel/api/central/capabilities",
+		basePath + "panel/api/central/other",
+		basePath + "panel/api/central/capabilities/extra",
+	} {
+		if isCentralReadOnlyPath(path, basePath) {
+			t.Errorf("path %q must not be central read-only", path)
+		}
 	}
 }
 

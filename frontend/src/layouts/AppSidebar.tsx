@@ -12,6 +12,7 @@ import {
   MenuOutlined,
   MoonFilled,
   MoonOutlined,
+	SettingOutlined,
   SunOutlined,
   ToolOutlined,
 } from '@ant-design/icons';
@@ -26,12 +27,14 @@ const railStyle = { '--sider-rail': `${RAIL_WIDTH}px` } as CSSProperties;
 
 let hoveredAcrossRemounts = false;
 
-type IconName = 'lines' | 'deploy' | 'diagnostics' | 'logout';
+type IconName = 'lines' | 'deploy' | 'diagnostics' | 'central' | 'settings' | 'logout';
 
 const iconByName: Record<IconName, ComponentType> = {
   lines: ImportOutlined,
   deploy: CloudServerOutlined,
   diagnostics: ToolOutlined,
+	central: CloudServerOutlined,
+	settings: SettingOutlined,
   logout: LogoutOutlined,
 };
 
@@ -61,7 +64,7 @@ export default function AppSidebar() {
   const { t } = useTranslation();
   const { isDark, isUltra, toggleTheme, toggleUltra } = useTheme();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const [hovered, setHovered] = useState(() => hoveredAcrossRemounts);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const railCollapsed = !hovered;
@@ -85,6 +88,8 @@ export default function AppSidebar() {
     { key: '/lines', icon: 'lines', title: '线路列表' },
     { key: '/lines/deploy', icon: 'deploy', title: '线路部署' },
     { key: '/diagnostics', icon: 'diagnostics', title: '诊断日志' },
+	{ key: '/settings#central', icon: 'central', title: '总站接入' },
+	{ key: '/settings', icon: 'settings', title: '设置' },
     { key: LOGOUT_KEY, icon: 'logout', title: t('logout') },
   ], [t]);
 
@@ -92,7 +97,8 @@ export default function AppSidebar() {
   const utilItems = useMemo(() => tabs.filter((tab) => tab.icon === 'logout'), [tabs]);
   const lineDeployActive = pathname.startsWith('/lines/deploy');
   const lineListActive = pathname === '/' || pathname === '/lines' || (pathname.startsWith('/lines/') && !lineDeployActive);
-  const selectedKey = lineDeployActive ? '/lines/deploy' : lineListActive ? '/lines' : pathname;
+	const centralAccessActive = pathname === '/settings' && hash === '#central';
+  const selectedKey = centralAccessActive ? '/settings#central' : lineDeployActive ? '/lines/deploy' : lineListActive ? '/lines' : pathname;
   const panelVersion = window.X_UI_CUR_VER || '?';
 
   const toMenuItems = useCallback((items: typeof tabs): MenuProps['items'] =>

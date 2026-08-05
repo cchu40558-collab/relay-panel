@@ -29,13 +29,14 @@ import TelegramTab from './TelegramTab';
 import EmailTab from './EmailTab';
 import SubscriptionGeneralTab from './SubscriptionGeneralTab';
 import SubscriptionFormatsTab from './SubscriptionFormatsTab';
+import CentralManagementTab from './CentralManagementTab';
 import './SettingsPage.css';
 
 interface ApiMsg {
   success?: boolean;
 }
 
-const tabSlugs = ['general', 'security', 'telegram', 'email', 'subscription', 'subscription-formats'];
+const tabSlugs = ['general', 'security', 'telegram', 'email', 'subscription', 'subscription-formats', 'central'];
 
 function isIp(h: string): boolean {
   if (typeof h !== 'string') return false;
@@ -197,6 +198,7 @@ export default function SettingsPage() {
 
   const categoryBody = useMemo(() => {
     switch (activeSlug) {
+	  case 'central': return <CentralManagementTab />;
       case 'security': return <SecurityTab allSetting={allSetting} updateSetting={updateSetting} saveSetting={savePayload} />;
       case 'telegram': return <TelegramTab allSetting={allSetting} updateSetting={updateSetting} />;
       case 'email': return <EmailTab allSetting={allSetting} updateSetting={updateSetting} />;

@@ -74,6 +74,7 @@ func allModels() []any {
 		&model.Node{},
 		&model.ApiToken{},
 		&model.CentralAccessToken{},
+		&model.CentralManagementEndpoint{},
 		&model.ClientRecord{},
 		&model.ClientInbound{},
 		&model.ClientExternalLink{},

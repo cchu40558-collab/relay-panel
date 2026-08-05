@@ -36,7 +36,7 @@ func NewAPIController(g *gin.RouterGroup) *APIController {
 }
 
 func (a *APIController) checkAPIAuth(c *gin.Context) {
-	if isCentralReadOnlyPath(c.Request.URL.Path) {
+	if isCentralReadOnlyPath(c.Request.URL.Path, c.GetString("base_path")) {
 		if c.Request.Method != http.MethodGet {
 			c.AbortWithStatus(http.StatusMethodNotAllowed)
 			return
@@ -135,7 +135,15 @@ func (a *APIController) initRouter(g *gin.RouterGroup) {
 	api.POST("/backuptotgbot", a.BackuptoTgbot)
 }
 
-func isCentralReadOnlyPath(path string) bool {
+func isCentralReadOnlyPath(path, basePath string) bool {
+	basePath = strings.TrimSpace(basePath)
+	if basePath != "" && basePath != "/" {
+		prefix := strings.TrimRight(basePath, "/")
+		if !strings.HasPrefix(path, prefix+"/") {
+			return false
+		}
+		path = strings.TrimPrefix(path, prefix)
+	}
 	switch path {
 	case "/panel/api/central/capabilities", "/panel/api/central/summary", "/panel/api/central/lines":
 		return true

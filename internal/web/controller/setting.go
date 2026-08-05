@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -45,12 +46,13 @@ type validateRegexForm struct {
 
 // SettingController handles settings and user management operations.
 type SettingController struct {
-	settingService       service.SettingService
-	userService          panel.UserService
-	panelService         panel.PanelService
-	apiTokenService      panel.ApiTokenService
-	centralAccessService panel.CentralAccessService
-	xrayService          service.XrayService
+	settingService           service.SettingService
+	userService              panel.UserService
+	panelService             panel.PanelService
+	apiTokenService          panel.ApiTokenService
+	centralAccessService     panel.CentralAccessService
+	centralManagementService service.CentralManagementService
+	xrayService              service.XrayService
 }
 
 // NewSettingController creates a new SettingController and initializes its routes.
@@ -80,6 +82,9 @@ func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/centralAccessTokens/create", a.createCentralAccessToken)
 	g.POST("/centralAccessTokens/delete/:id", a.deleteCentralAccessToken)
 	g.POST("/centralAccessTokens/setEnabled/:id", a.setCentralAccessTokenEnabled)
+	g.GET("/centralManagement", a.getCentralManagement)
+	g.POST("/centralManagement/apply", a.applyCentralManagement)
+	g.POST("/centralManagement/disable", a.disableCentralManagement)
 	g.POST("/testSmtp", a.testSmtp)
 	g.POST("/testTgBot", a.testTgBot)
 }
@@ -310,6 +315,75 @@ func (a *SettingController) setCentralAccessTokenEnabled(c *gin.Context) {
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.centralAccessService.SetEnabled(id, form.Enabled))
+}
+
+func (a *SettingController) getCentralManagement(c *gin.Context) {
+	status, err := a.centralManagementService.GetStatus()
+	jsonObj(c, status, err)
+}
+
+func (a *SettingController) applyCentralManagement(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOriginCertificateUploadSize)
+	certificateFile, err := c.FormFile("certificate")
+	if err != nil || certificateFile.Size <= 0 || certificateFile.Size > 1024*1024 {
+		jsonMsg(c, "Apply central management", fmt.Errorf("certificate file is required and must be smaller than 1 MiB"))
+		return
+	}
+	privateKeyFile, err := c.FormFile("privateKey")
+	if err != nil || privateKeyFile.Size <= 0 || privateKeyFile.Size > 1024*1024 {
+		jsonMsg(c, "Apply central management", fmt.Errorf("private key file is required and must be smaller than 1 MiB"))
+		return
+	}
+	certificate, err := readMultipartFile(certificateFile)
+	if err != nil {
+		jsonMsg(c, "Apply central management", err)
+		return
+	}
+	privateKey, err := readMultipartFile(privateKeyFile)
+	if err != nil {
+		jsonMsg(c, "Apply central management", err)
+		return
+	}
+	port, err := strconv.Atoi(c.PostForm("port"))
+	if err != nil {
+		jsonMsg(c, "Apply central management", fmt.Errorf("port must be a number"))
+		return
+	}
+	status, err := a.centralManagementService.Apply(service.CentralManagementRequest{
+		Domain: c.PostForm("domain"),
+		Port:   port,
+	}, certificate, privateKey)
+	if err == nil {
+		err = a.settingService.SetListen("127.0.0.1")
+	}
+	if err == nil {
+		err = a.centralManagementService.SetPanelBoundToLoopback(true)
+	}
+	if err == nil {
+		err = a.panelService.RestartPanel(3 * time.Second)
+	}
+	if err == nil {
+		status, err = a.centralManagementService.GetStatus()
+	}
+	jsonMsgObj(c, "Central management entry applied", status, err)
+}
+
+func (a *SettingController) disableCentralManagement(c *gin.Context) {
+	previousListen, err := a.settingService.GetListen()
+	if err == nil {
+		err = a.settingService.SetListen("")
+	}
+	status := (*service.CentralManagementStatus)(nil)
+	if err == nil {
+		status, err = a.centralManagementService.Disable()
+	}
+	if err != nil {
+		_ = a.settingService.SetListen(previousListen)
+		jsonMsgObj(c, "Central management entry disabled", status, err)
+		return
+	}
+	err = a.panelService.RestartPanel(3 * time.Second)
+	jsonMsgObj(c, "Central management entry disabled", status, err)
 }
 
 func (a *SettingController) testSmtp(c *gin.Context) {

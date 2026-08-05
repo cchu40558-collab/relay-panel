@@ -175,6 +175,23 @@ type CentralAccessToken struct {
 	RevokedAt  int64  `json:"revokedAt" gorm:"default:0"`
 }
 
+// CentralManagementEndpoint holds the non-secret state of the optional HTTPS
+// management entry that RP Console uses to reach this Relay Panel. Certificate
+// material is stored only as root-owned files on the host, never in SQLite.
+type CentralManagementEndpoint struct {
+	Id                   int    `json:"id" gorm:"primaryKey"`
+	Enabled              bool   `json:"enabled" gorm:"default:false"`
+	Domain               string `json:"domain" gorm:"size:253"`
+	Port                 int    `json:"port"`
+	CertificateFile      string `json:"-" gorm:"size:512"`
+	KeyFile              string `json:"-" gorm:"size:512"`
+	CertificateSHA256    string `json:"certificateSha256" gorm:"size:64"`
+	CertificateExpiresAt int64  `json:"certificateExpiresAt"`
+	PanelBoundToLoopback bool   `json:"panelBoundToLoopback" gorm:"default:false"`
+	AppliedAt            int64  `json:"appliedAt"`
+	LastError            string `json:"lastError" gorm:"size:1024"`
+}
+
 // MarshalJSON emits settings, streamSettings, and sniffing as nested JSON
 // objects rather than escaped strings, so API consumers don't need to JSON.parse
 // a string inside a string. Empty fields render as null; fields whose stored

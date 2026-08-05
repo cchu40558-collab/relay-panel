@@ -4,6 +4,7 @@ import { Navigate, createBrowserRouter, type RouteObject } from 'react-router';
 import PanelLayout from '@/layouts/PanelLayout';
 
 const LinesPage = lazy(() => import('@/pages/lines/LinesPage'));
+const SettingsPage = lazy(() => import('@/pages/settings/SettingsPage'));
 
 function withSuspense(node: React.ReactNode) {
   return <Suspense fallback={null}>{node}</Suspense>;
@@ -23,6 +24,7 @@ const routes: RouteObject[] = [
 		{ path: 'lines/deploy/bunny', element: withSuspense(<LinesPage />) },
       { path: 'lines/deploy/reality', element: withSuspense(<LinesPage />) },
       { path: 'diagnostics', element: withSuspense(<LinesPage />) },
+	  { path: 'settings', element: withSuspense(<SettingsPage />) },
       { path: '*', element: <Navigate to="/lines" replace /> },
     ],
   },
