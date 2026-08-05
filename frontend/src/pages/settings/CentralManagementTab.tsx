@@ -3,7 +3,7 @@ import { Button, Descriptions, Divider, Empty, Form, Input, Modal, Select, Space
 import type { UploadFile } from 'antd';
 
 import { ClipboardManager, HttpUtil, IntlUtil } from '@/utils';
-import './SecurityTab.css';
+import '../central-access/CentralAccessPage.css';
 
 interface ApiMsg<T = unknown> { success?: boolean; msg?: string; obj?: T; }
 interface CentralManagementStatus { enabled: boolean; domain: string; port: number; basePath: string; certificateSha256: string; certificateExpiresAt: number; panelBoundToLoopback: boolean; appliedAt: number; lastError: string; }
