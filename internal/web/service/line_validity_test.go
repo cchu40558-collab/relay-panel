@@ -144,6 +144,55 @@ func TestExpireLineCutsRuntimeButPreservesLineMetadata(t *testing.T) {
 	}
 }
 
+func TestExpireShadowsocksLineRemovesManagedClient(t *testing.T) {
+	setupLineValidityDB(t)
+	now := time.Now()
+	password := randomShadowsocksClientKey(defaultShadowsocksMethod)
+	inbound := &model.Inbound{Tag: "line-1-in", Enable: true, Listen: "0.0.0.0", Port: 30080, Protocol: model.Shadowsocks, Settings: mustJSON(map[string]any{
+		"method":  defaultShadowsocksMethod,
+		"clients": []map[string]any{{"email": "line-1-user", "password": password}},
+	})}
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatalf("create Shadowsocks inbound: %v", err)
+	}
+	line := &model.LineProfile{
+		Name:        "expired-shadowsocks-line",
+		Type:        LineTypeShadowsocks,
+		Status:      "active",
+		InboundId:   &inbound.Id,
+		OutboundTag: "line-1-out",
+		ValidUntil:  now.Add(-time.Minute).Unix(),
+		ConfigJSON:  `{}`,
+	}
+	if err := database.GetDB().Create(line).Error; err != nil {
+		t.Fatalf("create Shadowsocks line: %v", err)
+	}
+	client := &model.ClientRecord{Email: lineManagedClientEmail(line.Id), SubID: lineManagedClientSubID(line.Id), Password: password, Enable: true}
+	if err := database.GetDB().Create(client).Error; err != nil {
+		t.Fatalf("create managed Shadowsocks client: %v", err)
+	}
+	if err := database.GetDB().Create(&model.ClientInbound{ClientId: client.Id, InboundId: inbound.Id}).Error; err != nil {
+		t.Fatalf("link managed Shadowsocks client: %v", err)
+	}
+
+	restart, err := (&LineService{}).expireLine(line.Id, now)
+	if err != nil || !restart {
+		t.Fatalf("expire Shadowsocks line = restart:%v err:%v", restart, err)
+	}
+	var deletedInbound model.Inbound
+	if err := database.GetDB().First(&deletedInbound, inbound.Id).Error; err == nil {
+		t.Fatal("expired Shadowsocks inbound still exists")
+	}
+	var deletedClient model.ClientRecord
+	if err := database.GetDB().First(&deletedClient, client.Id).Error; err == nil {
+		t.Fatal("expired Shadowsocks managed client still exists")
+	}
+	var deletedLink model.ClientInbound
+	if err := database.GetDB().Where("client_id = ? AND inbound_id = ?", client.Id, inbound.Id).First(&deletedLink).Error; err == nil {
+		t.Fatal("expired Shadowsocks managed client link still exists")
+	}
+}
+
 func TestRenewLineRequiresExpiredManualLock(t *testing.T) {
 	setupLineValidityDB(t)
 	now := time.Now()

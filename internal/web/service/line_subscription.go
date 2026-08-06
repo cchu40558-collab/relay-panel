@@ -40,7 +40,7 @@ func (s *LineService) GetLineClashSubscriptionShare(id int) (*LineClashSubscript
 	if inbound == nil {
 		return nil, fmt.Errorf("line has not been applied yet")
 	}
-	if line.Type != LineTypeCloudflare && line.Type != LineTypeReality {
+	if line.Type != LineTypeCloudflare && line.Type != LineTypeReality && line.Type != LineTypeShadowsocks {
 		return nil, fmt.Errorf("Clash subscription is not available for this line type")
 	}
 
@@ -77,7 +77,7 @@ func (s *LineService) ResetLineClashSubscription(id int) (*LineClashSubscription
 	if inbound == nil {
 		return nil, fmt.Errorf("line has not been applied yet")
 	}
-	if line.Type != LineTypeCloudflare && line.Type != LineTypeReality {
+	if line.Type != LineTypeCloudflare && line.Type != LineTypeReality && line.Type != LineTypeShadowsocks {
 		return nil, fmt.Errorf("Clash subscription is not available for this line type")
 	}
 
@@ -139,11 +139,7 @@ func buildLineClashSubscriptionYAML(id int) ([]byte, string, error) {
 	if inbound == nil {
 		return nil, "", fmt.Errorf("line has not been applied yet")
 	}
-	clientID, err := firstVlessClientID(inbound.Settings)
-	if err != nil {
-		return nil, "", err
-	}
-	proxy, err := buildLineClashProxy(line, clientID, config)
+	proxy, err := buildLineClashProxy(line, inbound, config)
 	if err != nil {
 		return nil, "", err
 	}
@@ -171,7 +167,10 @@ func buildLineClashSubscriptionYAML(id int) ([]byte, string, error) {
 	return body, fmt.Sprintf("relay-panel-line-%d.yaml", line.Id), nil
 }
 
-func buildLineClashProxy(line model.LineProfile, clientID string, config map[string]string) (map[string]any, error) {
+func buildLineClashProxy(line model.LineProfile, inbound *model.Inbound, config map[string]string) (map[string]any, error) {
+	if inbound == nil {
+		return nil, fmt.Errorf("line has not been applied yet")
+	}
 	host := strings.TrimSpace(line.EntryHost)
 	if host == "" {
 		return nil, fmt.Errorf("entry host is required")
@@ -180,18 +179,22 @@ func buildLineClashProxy(line model.LineProfile, clientID string, config map[str
 	if name == "" {
 		name = lineTypeName(line.Type)
 	}
-	proxy := map[string]any{
-		"name":               name,
-		"type":               "vless",
-		"server":             strings.Trim(host, "[]"),
-		"port":               line.EntryPort,
-		"uuid":               clientID,
-		"udp":                true,
-		"tls":                true,
-		"client-fingerprint": "chrome",
-	}
 	switch line.Type {
 	case LineTypeCloudflare:
+		clientID, err := firstVlessClientID(inbound.Settings)
+		if err != nil {
+			return nil, err
+		}
+		proxy := map[string]any{
+			"name":               name,
+			"type":               "vless",
+			"server":             strings.Trim(host, "[]"),
+			"port":               line.EntryPort,
+			"uuid":               clientID,
+			"udp":                true,
+			"tls":                true,
+			"client-fingerprint": "chrome",
+		}
 		wsPath := strings.TrimSpace(config["wsPath"])
 		if wsPath == "" {
 			wsPath = "/"
@@ -202,7 +205,22 @@ func buildLineClashProxy(line model.LineProfile, clientID string, config map[str
 			"path":    wsPath,
 			"headers": map[string]string{"Host": host},
 		}
+		return proxy, nil
 	case LineTypeReality:
+		clientID, err := firstVlessClientID(inbound.Settings)
+		if err != nil {
+			return nil, err
+		}
+		proxy := map[string]any{
+			"name":               name,
+			"type":               "vless",
+			"server":             strings.Trim(host, "[]"),
+			"port":               line.EntryPort,
+			"uuid":               clientID,
+			"udp":                true,
+			"tls":                true,
+			"client-fingerprint": "chrome",
+		}
 		publicKey := strings.TrimSpace(config["realityPublicKey"])
 		shortID := strings.TrimSpace(config["realityShortId"])
 		sni := strings.TrimSpace(config["realitySni"])
@@ -225,10 +243,24 @@ func buildLineClashProxy(line model.LineProfile, clientID string, config map[str
 			"public-key": publicKey,
 			"short-id":   shortID,
 		}
+		return proxy, nil
+	case LineTypeShadowsocks:
+		password, err := lineManagedShadowsocksPassword(line.Id)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"name":     name,
+			"type":     "ss",
+			"server":   strings.Trim(host, "[]"),
+			"port":     line.EntryPort,
+			"cipher":   defaultShadowsocksMethod,
+			"password": password,
+			"udp":      false,
+		}, nil
 	default:
 		return nil, fmt.Errorf("Clash subscription is not available for this line type")
 	}
-	return proxy, nil
 }
 
 func findLineSubscriptionHost() (model.LineProfile, map[string]string, error) {

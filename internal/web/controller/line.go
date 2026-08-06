@@ -353,7 +353,7 @@ type prepareLineResponse struct {
 func (a *LineController) prepareLine(c *gin.Context) {
 	var req prepareLineRequest
 	_ = c.ShouldBindJSON(&req)
-	if req.Type != service.LineTypeCloudflare && req.Type != service.LineTypeBunny && req.Type != service.LineTypeReality {
+	if req.Type != service.LineTypeCloudflare && req.Type != service.LineTypeBunny && req.Type != service.LineTypeReality && req.Type != service.LineTypeShadowsocks {
 		req.Type = service.LineTypeCloudflare
 	}
 
@@ -376,6 +376,10 @@ func (a *LineController) prepareLine(c *gin.Context) {
 	case "reality_direct":
 		resp.Name = "Reality 直连"
 		resp.ChainText = "用户 -> VPS Reality:443 -> SOCKS5/HTTP/HTTPS 住宅出口"
+	case "shadowsocks_direct":
+		resp.Name = "Shadowsocks 直连"
+		resp.EntryPort = 0
+		resp.ChainText = "用户 -> VPS Shadowsocks -> SOCKS5/HTTP/HTTPS 住宅出口"
 	}
 
 	jsonObj(c, resp, nil)

@@ -36,8 +36,10 @@ const (
 	LineTypeCloudflare             = "cloudflare_ws_tls"
 	LineTypeBunny                  = "bunny_ws_tls"
 	LineTypeReality                = "reality_direct"
+	LineTypeShadowsocks            = "shadowsocks_direct"
 	LineTypeTrojan                 = "trojan_direct"
 	defaultRealityMinClientVersion = "1.8.0"
+	defaultShadowsocksMethod       = "2022-blake3-aes-128-gcm"
 )
 
 var managedNginxCertRoot = "/etc/line-panel/nginx-certs"
@@ -134,9 +136,10 @@ type LineDeleteResult struct {
 }
 
 type LineShareResponse struct {
-	Links                  []LineShareLink              `json:"links"`
+	Protocol               string                      `json:"protocol"`
+	Links                  []LineShareLink             `json:"links"`
 	ClashSubscription      *LineClashSubscriptionShare `json:"clashSubscription,omitempty"`
-	ClashSubscriptionError string                       `json:"clashSubscriptionError,omitempty"`
+	ClashSubscriptionError string                      `json:"clashSubscriptionError,omitempty"`
 }
 
 type LineShareLink struct {
@@ -182,6 +185,11 @@ func (s *LineService) GetLineTypes() []LineTypeInfo {
 			Type:        LineTypeReality,
 			Name:        "Reality 直连",
 			Description: "用户 -> VPS Reality -> 住宅出口",
+		},
+		{
+			Type:        LineTypeShadowsocks,
+			Name:        "Shadowsocks 直连",
+			Description: "用户 -> VPS Shadowsocks -> 住宅出口",
 		},
 	}
 }
@@ -728,7 +736,7 @@ func (s *LineService) ApplyLine(id int) (*LineDetail, error) {
 		if err := createLineLog(tx, line.Id, "xray", "info", "已生成 Xray 入站和出站草案", "下一阶段写入 3x-ui/Xray 配置并重启 Xray"); err != nil {
 			return err
 		}
-		if line.Type == LineTypeCloudflare || line.Type == LineTypeBunny || line.Type == LineTypeReality {
+		if line.Type == LineTypeCloudflare || line.Type == LineTypeBunny || line.Type == LineTypeReality || line.Type == LineTypeShadowsocks {
 			appliedInboundID, err := applyLineXray(tx, &line, &outbound, config)
 			if err != nil {
 				return wrapLineApplyFailure("xray", "Write Xray inbound/outbound failed", err)
@@ -1096,30 +1104,46 @@ func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {
 		return nil, fmt.Errorf("line has not been applied yet")
 	}
 
-	clientID, err := firstVlessClientID(inbound.Settings)
-	if err != nil {
-		return nil, err
-	}
 	var label string
 	var link string
+	protocol := ""
 	switch line.Type {
 	case LineTypeCloudflare, LineTypeBunny:
+		clientID, err := firstVlessClientID(inbound.Settings)
+		if err != nil {
+			return nil, err
+		}
 		wsPath := strings.TrimSpace(config["wsPath"])
 		if wsPath == "" {
 			wsPath = "/"
 		}
 		label = "VLESS WS TLS"
 		link = buildCloudflareVlessShareLink(line, clientID, wsPath)
+		protocol = "vless"
 	case LineTypeReality:
+		clientID, err := firstVlessClientID(inbound.Settings)
+		if err != nil {
+			return nil, err
+		}
 		label = "VLESS Reality"
 		link, err = buildRealityVlessShareLink(line, clientID, config)
 		if err != nil {
 			return nil, err
 		}
+		protocol = "vless"
+	case LineTypeShadowsocks:
+		password, err := lineManagedShadowsocksPassword(line.Id)
+		if err != nil {
+			return nil, err
+		}
+		label = "Shadowsocks"
+		link = buildShadowsocksShareLink(line, password)
+		protocol = "shadowsocks"
 	default:
 		return nil, fmt.Errorf("share link for this line type is not ready yet")
 	}
 	response := &LineShareResponse{
+		Protocol: protocol,
 		Links: []LineShareLink{{
 			Label: label,
 			URI:   link,
@@ -1379,6 +1403,11 @@ func buildRealityVlessShareLink(line model.LineProfile, clientID string, config 
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", clientID, formatShareHost(host), line.EntryPort, params.Encode(), url.QueryEscape(line.Name)), nil
 }
 
+func buildShadowsocksShareLink(line model.LineProfile, password string) string {
+	credentials := base64.RawURLEncoding.EncodeToString([]byte(defaultShadowsocksMethod + ":" + password))
+	return fmt.Sprintf("ss://%s@%s:%d#%s", credentials, formatShareHost(line.EntryHost), line.EntryPort, url.QueryEscape(line.Name))
+}
+
 func formatShareHost(host string) string {
 	host = strings.TrimSpace(host)
 	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
@@ -1429,7 +1458,7 @@ func validateLineForApply(line *model.LineProfile, outbound *model.LineOutbound,
 	if outbound == nil {
 		return fmt.Errorf("residential outbound config is required")
 	}
-	if line.Type != LineTypeCloudflare && line.Type != LineTypeBunny && line.Type != LineTypeReality {
+	if line.Type != LineTypeCloudflare && line.Type != LineTypeBunny && line.Type != LineTypeReality && line.Type != LineTypeShadowsocks {
 		return fmt.Errorf("unsupported line type for MVP apply: %s", line.Type)
 	}
 	if err := validateHostValue("entry host", line.EntryHost); err != nil {
@@ -1619,6 +1648,8 @@ func applyLineXray(tx *gorm.DB, line *model.LineProfile, outbound *model.LineOut
 		return applyCloudflareXray(tx, line, outbound, config)
 	case LineTypeReality:
 		return applyRealityXray(tx, line, outbound, config)
+	case LineTypeShadowsocks:
+		return applyShadowsocksXray(tx, line, outbound)
 	default:
 		return 0, fmt.Errorf("line type %s has no xray executor", line.Type)
 	}
@@ -1825,6 +1856,102 @@ func applyRealityXray(tx *gorm.DB, line *model.LineProfile, outbound *model.Line
 	return inbound.Id, nil
 }
 
+func applyShadowsocksXray(tx *gorm.DB, line *model.LineProfile, outbound *model.LineOutbound) (int, error) {
+	if line == nil || outbound == nil {
+		return 0, fmt.Errorf("line and outbound are required")
+	}
+	if strings.TrimSpace(line.EntryHost) == "" {
+		return 0, fmt.Errorf("Shadowsocks entry host is required")
+	}
+	if err := validatePortValue("Shadowsocks entry port", line.EntryPort); err != nil {
+		return 0, err
+	}
+	if strings.TrimSpace(outbound.Host) == "" || outbound.Port <= 0 {
+		return 0, fmt.Errorf("residential outbound host and port are required")
+	}
+
+	inboundTag := fmt.Sprintf("line-%d-in", line.Id)
+	outboundTag := line.OutboundTag
+	if outboundTag == "" {
+		outboundTag = fmt.Sprintf("line-%d-out", line.Id)
+		line.OutboundTag = outboundTag
+	}
+
+	var existing model.Inbound
+	existingID := 0
+	if line.InboundId != nil && *line.InboundId > 0 {
+		if err := tx.First(&existing, *line.InboundId).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+		existingID = existing.Id
+	}
+	if existingID == 0 {
+		err := tx.Where("tag = ?", inboundTag).First(&existing).Error
+		if err == nil {
+			existingID = existing.Id
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, err
+		}
+	}
+
+	var conflictCount int64
+	if err := tx.Model(&model.Inbound{}).
+		Where("node_id IS NULL AND port = ? AND id <> ?", line.EntryPort, existingID).
+		Count(&conflictCount).Error; err != nil {
+		return 0, err
+	}
+	if conflictCount > 0 {
+		return 0, fmt.Errorf("Shadowsocks port %d is already used by another inbound", line.EntryPort)
+	}
+
+	password, err := ensureLineManagedShadowsocksClient(tx, line)
+	if err != nil {
+		return 0, err
+	}
+	inbound := buildShadowsocksInbound(line, inboundTag, password)
+	if existingID > 0 {
+		inbound.Id = existingID
+		if err := tx.Model(&existing).Updates(map[string]any{
+			"user_id":             inbound.UserId,
+			"remark":              inbound.Remark,
+			"sub_sort_index":      inbound.SubSortIndex,
+			"enable":              inbound.Enable,
+			"traffic_reset":       inbound.TrafficReset,
+			"traffic_reset_day":   inbound.TrafficResetDay,
+			"listen":              inbound.Listen,
+			"port":                inbound.Port,
+			"protocol":            inbound.Protocol,
+			"settings":            inbound.Settings,
+			"stream_settings":     inbound.StreamSettings,
+			"sniffing":            inbound.Sniffing,
+			"tag":                 inbound.Tag,
+			"share_addr_strategy": inbound.ShareAddrStrategy,
+			"share_addr":          inbound.ShareAddr,
+		}).Error; err != nil {
+			return 0, err
+		}
+	} else if err := tx.Create(inbound).Error; err != nil {
+		return 0, err
+	}
+
+	if err := attachLineManagedClient(tx, line, inbound.Id); err != nil {
+		return 0, err
+	}
+	if err := upsertLineOutboundInTemplate(tx, outboundTag, inboundTag, outbound); err != nil {
+		return 0, err
+	}
+	if err := tx.Model(line).Updates(map[string]any{
+		"inbound_id":   inbound.Id,
+		"outbound_tag": outboundTag,
+	}).Error; err != nil {
+		return 0, err
+	}
+	if err := tx.Model(outbound).Update("tag", outboundTag).Error; err != nil {
+		return 0, err
+	}
+	return inbound.Id, nil
+}
+
 func buildCloudflareInbound(line *model.LineProfile, inboundTag string, localPort int, wsPath string, config map[string]string) *model.Inbound {
 	clientID := strings.TrimSpace(config["clientId"])
 	if clientID == "" {
@@ -1972,6 +2099,39 @@ func buildRealityInbound(line *model.LineProfile, inboundTag string, config map[
 	}
 }
 
+func buildShadowsocksInbound(line *model.LineProfile, inboundTag string, password string) *model.Inbound {
+	settings := mustJSON(map[string]any{
+		"method": defaultShadowsocksMethod,
+		"clients": []map[string]any{{
+			"password": password,
+			"email":    lineManagedClientEmail(line.Id),
+			"enable":   true,
+		}},
+	})
+	stream := mustJSON(map[string]any{"network": "tcp"})
+	sniffing := mustJSON(map[string]any{
+		"enabled":      true,
+		"destOverride": []string{"http", "tls"},
+	})
+	return &model.Inbound{
+		UserId:            1,
+		Remark:            line.Name,
+		SubSortIndex:      1,
+		Enable:            true,
+		TrafficReset:      "never",
+		TrafficResetDay:   1,
+		Listen:            "0.0.0.0",
+		Port:              line.EntryPort,
+		Protocol:          model.Shadowsocks,
+		Settings:          settings,
+		StreamSettings:    stream,
+		Sniffing:          sniffing,
+		Tag:               inboundTag,
+		ShareAddrStrategy: "custom",
+		ShareAddr:         line.EntryHost,
+	}
+}
+
 // upsertLineManagedClient keeps the generated share-link identity in 3x-ui's
 // normalized client tables. Xray builds active users from these tables, not
 // from the legacy clients array persisted in an inbound's settings JSON.
@@ -2025,6 +2185,71 @@ func upsertLineManagedClient(tx *gorm.DB, line *model.LineProfile, inboundID int
 	return tx.Where("client_id = ? AND inbound_id = ?", record.Id, inboundID).
 		Assign(map[string]any{"flow_override": flow}).
 		FirstOrCreate(&link).Error
+}
+
+func ensureLineManagedShadowsocksClient(tx *gorm.DB, line *model.LineProfile) (string, error) {
+	if tx == nil || line == nil {
+		return "", fmt.Errorf("Shadowsocks line client requires transaction and line")
+	}
+	email := lineManagedClientEmail(line.Id)
+	subID := lineManagedClientSubID(line.Id)
+	var record model.ClientRecord
+	err := tx.Where("email = ?", email).First(&record).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		password := randomShadowsocksClientKey(defaultShadowsocksMethod)
+		record = model.ClientRecord{Email: email, SubID: subID, Password: password, Enable: true}
+		if err := tx.Create(&record).Error; err != nil {
+			return "", err
+		}
+		return password, nil
+	case err != nil:
+		return "", err
+	default:
+		if record.SubID != subID {
+			return "", fmt.Errorf("managed line client email is already owned by another client: %s", email)
+		}
+		password := record.Password
+		if !validShadowsocksClientKey(defaultShadowsocksMethod, password) {
+			password = randomShadowsocksClientKey(defaultShadowsocksMethod)
+		}
+		if err := tx.Model(&record).Updates(map[string]any{
+			"password": password,
+			"enable":   true,
+			"sub_id":   subID,
+			"uuid":     "",
+			"flow":     "",
+		}).Error; err != nil {
+			return "", err
+		}
+		return password, nil
+	}
+}
+
+func attachLineManagedClient(tx *gorm.DB, line *model.LineProfile, inboundID int) error {
+	if tx == nil || line == nil || inboundID <= 0 {
+		return fmt.Errorf("line client requires transaction, line, and inbound")
+	}
+	var record model.ClientRecord
+	if err := tx.Where("email = ?", lineManagedClientEmail(line.Id)).First(&record).Error; err != nil {
+		return err
+	}
+	if record.SubID != lineManagedClientSubID(line.Id) {
+		return fmt.Errorf("managed line client email is already owned by another client: %s", record.Email)
+	}
+	link := model.ClientInbound{ClientId: record.Id, InboundId: inboundID}
+	return tx.Where("client_id = ? AND inbound_id = ?", record.Id, inboundID).FirstOrCreate(&link).Error
+}
+
+func lineManagedShadowsocksPassword(lineID int) (string, error) {
+	var record model.ClientRecord
+	if err := database.GetDB().Where("email = ?", lineManagedClientEmail(lineID)).First(&record).Error; err != nil {
+		return "", err
+	}
+	if record.SubID != lineManagedClientSubID(lineID) || !validShadowsocksClientKey(defaultShadowsocksMethod, record.Password) {
+		return "", fmt.Errorf("managed Shadowsocks password is unavailable")
+	}
+	return record.Password, nil
 }
 
 func removeLineManagedClient(tx *gorm.DB, lineID int) error {
@@ -2301,7 +2526,11 @@ func normalizeLineSaveRequest(req LineSaveRequest, id int) (LineSaveRequest, err
 
 	req.EntryHost = strings.TrimSpace(req.EntryHost)
 	if req.EntryPort <= 0 {
-		req.EntryPort = defaultLinePort(req.Type)
+		if defaultPort := defaultLinePort(req.Type); defaultPort > 0 {
+			req.EntryPort = defaultPort
+		} else {
+			return req, fmt.Errorf("entry port is required for %s", req.Type)
+		}
 	}
 	if req.EntryPort > 65535 {
 		return req, fmt.Errorf("entry port out of range: %d", req.EntryPort)
@@ -2341,7 +2570,7 @@ func normalizeLineSaveRequest(req LineSaveRequest, id int) (LineSaveRequest, err
 
 func isSupportedLineType(lineType string) bool {
 	switch lineType {
-	case LineTypeCloudflare, LineTypeBunny, LineTypeReality:
+	case LineTypeCloudflare, LineTypeBunny, LineTypeReality, LineTypeShadowsocks:
 		return true
 	default:
 		return false
@@ -2356,6 +2585,8 @@ func lineTypeName(lineType string) string {
 		return "Bunny CDN WS"
 	case LineTypeReality:
 		return "Reality 直连"
+	case LineTypeShadowsocks:
+		return "Shadowsocks 直连"
 	case LineTypeTrojan:
 		return "Trojan 直连"
 	default:
@@ -2369,6 +2600,8 @@ func defaultLinePort(lineType string) int {
 		return 8443
 	case LineTypeBunny:
 		return 443
+	case LineTypeShadowsocks:
+		return 0
 	default:
 		return 443
 	}
@@ -2383,6 +2616,8 @@ func buildLineChainText(lineType string, outboundType string) string {
 		return fmt.Sprintf("用户 -> Bunny CDN -> Nginx -> Xray 本地入站 -> %s 住宅出口", outbound)
 	case LineTypeReality:
 		return fmt.Sprintf("用户 -> VPS Reality -> %s 住宅出口", outbound)
+	case LineTypeShadowsocks:
+		return fmt.Sprintf("用户 -> VPS Shadowsocks -> %s 住宅出口", outbound)
 	case LineTypeTrojan:
 		return fmt.Sprintf("用户 -> VPS Trojan TLS -> %s 住宅出口", outbound)
 	default:
@@ -2394,7 +2629,7 @@ func ensureLineConfigDefaults(lineID int, lineType string, config map[string]str
 	if config == nil {
 		config = map[string]string{}
 	}
-	if strings.TrimSpace(config["clientId"]) == "" {
+	if (lineType == LineTypeCloudflare || lineType == LineTypeBunny || lineType == LineTypeReality) && strings.TrimSpace(config["clientId"]) == "" {
 		config["clientId"] = uuid.NewString()
 	}
 	if lineType == LineTypeCloudflare || lineType == LineTypeBunny {
@@ -2594,6 +2829,9 @@ func buildLineSummary(line model.LineProfile, outbound *model.LineOutbound, conf
 		summary = append(summary, "Reality Dest: "+config["realityDest"])
 		summary = append(summary, "Reality Short ID: "+config["realityShortId"])
 	}
+	if line.Type == LineTypeShadowsocks {
+		summary = append(summary, "Shadowsocks method: "+defaultShadowsocksMethod)
+	}
 	return summary
 }
 
@@ -2626,6 +2864,17 @@ func buildXrayInboundPlan(line model.LineProfile, config map[string]string) map[
 				"fingerprint": config["realityFingerprint"],
 				"flow":        config["realityFlow"],
 			},
+		}
+	case LineTypeShadowsocks:
+		return map[string]any{
+			"tag":      tag,
+			"listen":   "0.0.0.0",
+			"port":     line.EntryPort,
+			"protocol": "shadowsocks",
+			"transport": map[string]any{
+				"network": "tcp",
+			},
+			"method": defaultShadowsocksMethod,
 		}
 	case LineTypeTrojan:
 		return map[string]any{

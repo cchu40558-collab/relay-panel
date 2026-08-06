@@ -118,7 +118,8 @@ type LineTrafficSnapshot = Pick<LineMetrics, 'lineId' | 'inboundSpeedUp' | 'inbo
 };
 
 type LineShareResponse = {
-  links: Array<{
+	protocol: 'vless' | 'shadowsocks';
+	links: Array<{
     label: string;
     uri: string;
   }>;
@@ -357,6 +358,7 @@ async function renewLine(id: number, validUntil: number): Promise<LineDetail> {
 
 function lineTypeFromPath(pathname: string) {
   if (pathname.includes('/deploy/reality')) return 'reality_direct';
+	if (pathname.includes('/deploy/shadowsocks')) return 'shadowsocks_direct';
 	if (pathname.includes('/deploy/bunny')) return 'bunny_ws_tls';
   return 'cloudflare_ws_tls';
 }
@@ -394,6 +396,8 @@ function typeLabel(type: string) {
 		return 'Bunny CDN WS';
     case 'reality_direct':
       return 'Reality 直连';
+	case 'shadowsocks_direct':
+		return 'Shadowsocks 直连';
     case 'trojan_direct':
       return 'Trojan 直连';
     default:
@@ -401,8 +405,10 @@ function typeLabel(type: string) {
   }
 }
 
-function defaultEntryPort(type: string) {
-  return type === 'cloudflare_ws_tls' ? 8443 : 443;
+function defaultEntryPort(type: string): number | undefined {
+  if (type === 'cloudflare_ws_tls') return 8443;
+  if (type === 'shadowsocks_direct') return undefined;
+  return 443;
 }
 
 function statusTag(status: string) {
@@ -436,6 +442,8 @@ function LineSpeedCell({ up, down }: { up?: number; down?: number }) {
 function LineChainDiagram({ line }: { line: LineDetail }) {
   const nodes = line.type === 'cloudflare_ws_tls' || line.type === 'bunny_ws_tls'
     ? ['手机/客户端', line.type === 'bunny_ws_tls' ? 'Bunny CDN' : 'Cloudflare', 'Nginx', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站']
+		: line.type === 'shadowsocks_direct'
+			? ['手机/客户端', 'Xray Shadowsocks 入站', `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站']
     : ['手机/客户端', `Xray 入站 line-${line.id}-in`, `Xray 出站 line-${line.id}-out`, '住宅代理', '测试网站'];
   return (
     <section className="line-detail-card">
@@ -456,6 +464,8 @@ function LineRuntimeOverview({ line, metrics }: { line: LineDetail; metrics?: Li
   const config = line.config ?? {};
   const start = line.validFrom || line.createdAt;
   const isWS = line.type === 'cloudflare_ws_tls' || line.type === 'bunny_ws_tls';
+	const isReality = line.type === 'reality_direct';
+	const isShadowsocks = line.type === 'shadowsocks_direct';
   const outbound = line.outbound?.host ? `${line.outbound.type.toUpperCase()} ${line.outbound.host}:${line.outbound.port}` : '--';
   const localPort = config.localXrayPort || '--';
   return (
@@ -482,7 +492,8 @@ function LineRuntimeOverview({ line, metrics }: { line: LineDetail; metrics?: Li
           <Descriptions size="small" column={1} items={[
             { key: 'type', label: '线路类型', children: typeLabel(line.type) },
             { key: 'entry', label: '客户端入口', children: line.entryHost ? `${line.entryHost}:${line.entryPort}` : '--' },
-            { key: 'transport', label: isWS ? 'WS 路径' : 'Reality SNI', children: isWS ? (config.wsPath || '--') : (config.realitySni || '--') },
+            { key: 'transport', label: isWS ? 'WS 路径' : isReality ? 'Reality SNI' : isShadowsocks ? '协议' : '传输', children: isWS ? (config.wsPath || '--') : isReality ? (config.realitySni || '--') : isShadowsocks ? 'Shadowsocks' : '--' },
+            ...(isShadowsocks ? [{ key: 'cipher', label: '加密方式', children: '2022-blake3-aes-128-gcm' }] : []),
             ...(isWS ? [{ key: 'nginx', label: 'Nginx 配置', children: config.nginxConfigPath || `x-ui-line-${line.id}.conf` }] : []),
           ]} />
         </div>
@@ -527,7 +538,7 @@ function buildPayload(type: string, values: LineFormValues, includeValidity = fa
     type,
     name: values.name?.trim() || typeLabel(type),
     entryHost: values.entryHost?.trim() || '',
-    entryPort: values.entryPort ?? defaultEntryPort(type),
+    entryPort: values.entryPort ?? defaultEntryPort(type) ?? 0,
     outboundType: values.outboundType || 'socks5',
     outboundHost: values.outboundHost?.trim() || '',
     outboundPort: values.outboundPort ?? 0,
@@ -637,6 +648,7 @@ function LineShareModal({
 }) {
   const firstLink = data?.links?.[0]?.uri ?? '';
   const subscriptionURL = data?.clashSubscription?.url ?? '';
+	const protocolLabel = data?.protocol === 'shadowsocks' ? 'Shadowsocks 链接' : 'VLESS 链接';
   const qrCodeRef = useRef<HTMLDivElement>(null);
 
   const copyQRCodeImage = async () => {
@@ -668,8 +680,8 @@ function LineShareModal({
         <Tabs
           items={[
             {
-              key: 'vless',
-              label: 'VLESS 链接',
+              key: 'protocol',
+              label: protocolLabel,
               children: (
                 <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                   <div className="line-share-qr" ref={qrCodeRef}>
@@ -887,7 +899,7 @@ function LineEditor({
             <Input placeholder={selectedType.name} />
           </Form.Item>
           <Form.Item label="入口地址" name="entryHost" rules={[{ validator: validateHost('入口地址') }]}>
-            <Input placeholder={type === 'cloudflare_ws_tls' ? 'Cloudflare 域名' : type === 'bunny_ws_tls' ? 'Bunny 公网入口，例如 wakeup01.b-cdn.net' : '服务器 IP 或域名'} />
+            <Input placeholder={type === 'cloudflare_ws_tls' ? 'Cloudflare 域名' : type === 'bunny_ws_tls' ? 'Bunny 公网入口，例如 wakeup01.b-cdn.net' : type === 'shadowsocks_direct' ? '服务器 IP 或灰云直连域名' : '服务器 IP 或域名'} />
           </Form.Item>
           <Form.Item label="入口端口" name="entryPort" rules={[{ required: true, message: '请填写入口端口' }, { type: 'number', min: 1, max: 65535, message: '端口必须在 1 到 65535 之间' }]}>
             <InputNumber min={1} max={65535} />
@@ -1054,6 +1066,12 @@ function LineTypePicker({ onSelect }: { onSelect: (type: string) => void }) {
       chain: ['用户', 'VPS Reality', 'Xray', '住宅出口'],
       description: '用户直接连接 VPS 的 Reality 入站，不经过 Cloudflare。',
     },
+		{
+			type: 'shadowsocks_direct',
+			name: 'Shadowsocks 直连',
+			chain: ['用户', 'VPS Shadowsocks', 'Xray', '住宅出口'],
+			description: '用户直接连接 VPS 的 Shadowsocks 入站，不经过 Cloudflare。',
+		},
   ];
 
   return (
@@ -1211,7 +1229,7 @@ export default function LinesPage() {
     }
   });
   const isDeployPicker = location.pathname === '/lines/deploy';
-	const isDeployForm = location.pathname === '/lines/deploy/cloudflare' || location.pathname === '/lines/deploy/bunny' || location.pathname === '/lines/deploy/reality';
+	const isDeployForm = location.pathname === '/lines/deploy/cloudflare' || location.pathname === '/lines/deploy/bunny' || location.pathname === '/lines/deploy/reality' || location.pathname === '/lines/deploy/shadowsocks';
   const isDiagnostics = location.pathname === '/diagnostics';
   const isLineEdit = location.pathname.endsWith('/edit');
   const lineId = params.id ? Number(params.id) : 0;
@@ -1692,7 +1710,7 @@ export default function LinesPage() {
   }
 
 	if (isDeployPicker) {
-		return <LinePageShell><LineTypePicker onSelect={(type) => navigate(type === 'reality_direct' ? '/lines/deploy/reality' : type === 'bunny_ws_tls' ? '/lines/deploy/bunny' : '/lines/deploy/cloudflare')} /></LinePageShell>;
+		return <LinePageShell><LineTypePicker onSelect={(type) => navigate(type === 'reality_direct' ? '/lines/deploy/reality' : type === 'shadowsocks_direct' ? '/lines/deploy/shadowsocks' : type === 'bunny_ws_tls' ? '/lines/deploy/bunny' : '/lines/deploy/cloudflare')} /></LinePageShell>;
   }
 
   if (isDeployForm) {

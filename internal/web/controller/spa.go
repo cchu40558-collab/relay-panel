@@ -39,6 +39,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g.GET("/lines", a.panelSPA)
 	g.GET("/lines/deploy/cloudflare", a.panelSPA)
 	g.GET("/lines/deploy/reality", a.panelSPA)
+	g.GET("/lines/deploy/shadowsocks", a.panelSPA)
 	g.GET("/diagnostics", a.panelSPA)
 	g.GET("/inbounds", a.panelSPA)
 	g.GET("/clients", a.panelSPA)

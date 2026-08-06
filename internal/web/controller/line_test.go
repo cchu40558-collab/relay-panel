@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -198,6 +199,89 @@ func TestLineController_LineTypesHideTrojanAndRejectCreate(t *testing.T) {
 	})
 	if create.Success {
 		t.Fatalf("trojan create should be rejected")
+	}
+}
+
+func TestLineController_ShadowsocksDirectApplyAndShare(t *testing.T) {
+	newHostTestDB(t)
+	engine := gin.New()
+	NewLineController(engine.Group("/panel/api"))
+
+	create := doHostReq(t, engine, http.MethodPost, "/panel/api/lines", map[string]any{
+		"type":             service.LineTypeShadowsocks,
+		"name":             "ss-direct",
+		"entryHost":        "203.0.113.10",
+		"entryPort":        30080,
+		"outboundType":     "socks5",
+		"outboundHost":     "res.example.net",
+		"outboundPort":     1080,
+		"outboundUsername": "alice",
+		"outboundPassword": "secret",
+	})
+	if !create.Success {
+		t.Fatalf("create Shadowsocks line: %s", create.Msg)
+	}
+	var created service.LineDetail
+	if err := json.Unmarshal(create.Obj, &created); err != nil {
+		t.Fatalf("decode created Shadowsocks line: %v", err)
+	}
+	if created.Config["clientId"] != "" || created.Plan == nil || created.Plan.Nginx != "" {
+		t.Fatalf("Shadowsocks draft has VLESS or Nginx-only configuration: %+v", created)
+	}
+
+	apply := doHostReq(t, engine, http.MethodPost, "/panel/api/lines/1/apply", map[string]any{})
+	if !apply.Success {
+		t.Fatalf("apply Shadowsocks line: %s", apply.Msg)
+	}
+	var applied service.LineDetail
+	if err := json.Unmarshal(apply.Obj, &applied); err != nil {
+		t.Fatalf("decode applied Shadowsocks line: %v", err)
+	}
+	if applied.InboundId == nil || applied.Status != "pending_check" {
+		t.Fatalf("applied Shadowsocks line = %+v", applied)
+	}
+	var inbound model.Inbound
+	if err := database.GetDB().First(&inbound, *applied.InboundId).Error; err != nil {
+		t.Fatalf("load Shadowsocks inbound: %v", err)
+	}
+	if inbound.Protocol != model.Shadowsocks || inbound.Listen != "0.0.0.0" || inbound.Port != 30080 || inbound.Tag != "line-1-in" {
+		t.Fatalf("Shadowsocks inbound = %+v", inbound)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		t.Fatalf("decode Shadowsocks settings: %v", err)
+	}
+	if settings["method"] != "2022-blake3-aes-128-gcm" {
+		t.Fatalf("Shadowsocks settings method = %#v", settings)
+	}
+	var client model.ClientRecord
+	if err := database.GetDB().Where("email = ?", "line-1-user").First(&client).Error; err != nil {
+		t.Fatalf("load managed Shadowsocks client: %v", err)
+	}
+	decodedPassword, err := base64.StdEncoding.DecodeString(client.Password)
+	if client.UUID != "" || err != nil || len(decodedPassword) != 16 {
+		t.Fatalf("managed Shadowsocks client = %+v", client)
+	}
+	var clientInbound model.ClientInbound
+	if err := database.GetDB().Where("client_id = ? AND inbound_id = ?", client.Id, inbound.Id).First(&clientInbound).Error; err != nil {
+		t.Fatalf("load managed Shadowsocks client link: %v", err)
+	}
+	var template model.Setting
+	if err := database.GetDB().Where("key = ?", "xrayTemplateConfig").First(&template).Error; err != nil {
+		t.Fatalf("load Xray template: %v", err)
+	}
+	assertXrayTemplateHasLineRoute(t, template.Value, "line-1-in", "line-1-out")
+
+	share := doHostReq(t, engine, http.MethodGet, "/panel/api/lines/1/share", nil)
+	if !share.Success {
+		t.Fatalf("share Shadowsocks line: %s", share.Msg)
+	}
+	var response service.LineShareResponse
+	if err := json.Unmarshal(share.Obj, &response); err != nil {
+		t.Fatalf("decode Shadowsocks share: %v", err)
+	}
+	if response.Protocol != "shadowsocks" || len(response.Links) != 1 || response.Links[0].Label != "Shadowsocks" || !strings.HasPrefix(response.Links[0].URI, "ss://") || strings.Contains(string(share.Obj), client.Password) {
+		t.Fatalf("Shadowsocks share = %+v", response)
 	}
 }
 
