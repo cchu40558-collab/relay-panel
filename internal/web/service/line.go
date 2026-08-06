@@ -1155,12 +1155,16 @@ func (s *LineService) GetLineShare(id int) (*LineShareResponse, error) {
 		}
 		protocol = "vless"
 	case LineTypeShadowsocks:
-		password, err := lineManagedShadowsocksPassword(line.Id)
+		clientKey, err := lineManagedShadowsocksPassword(line.Id)
+		if err != nil {
+			return nil, err
+		}
+		credentials, err := shadowsocks2022ShareCredentials(inbound, clientKey)
 		if err != nil {
 			return nil, err
 		}
 		label = "Shadowsocks"
-		link = buildShadowsocksShareLink(line, password)
+		link = buildShadowsocksShareLink(line, credentials)
 		protocol = "shadowsocks"
 	default:
 		return nil, fmt.Errorf("share link for this line type is not ready yet")
@@ -1426,9 +1430,49 @@ func buildRealityVlessShareLink(line model.LineProfile, clientID string, config 
 	return fmt.Sprintf("vless://%s@%s:%d?%s#%s", clientID, formatShareHost(host), line.EntryPort, params.Encode(), url.QueryEscape(line.Name)), nil
 }
 
-func buildShadowsocksShareLink(line model.LineProfile, password string) string {
-	credentials := base64.RawURLEncoding.EncodeToString([]byte(defaultShadowsocksMethod + ":" + password))
-	return fmt.Sprintf("ss://%s@%s:%d#%s", credentials, formatShareHost(line.EntryHost), line.EntryPort, url.QueryEscape(line.Name))
+type shadowsocks2022Credentials struct {
+	method    string
+	serverKey string
+	clientKey string
+}
+
+func shadowsocks2022ShareCredentials(inbound *model.Inbound, clientKey string) (shadowsocks2022Credentials, error) {
+	if inbound == nil {
+		return shadowsocks2022Credentials{}, fmt.Errorf("Shadowsocks inbound is unavailable")
+	}
+
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+		return shadowsocks2022Credentials{}, fmt.Errorf("read Shadowsocks settings: %w", err)
+	}
+	method, _ := settings["method"].(string)
+	method = strings.TrimSpace(method)
+	if !strings.HasPrefix(method, "2022-blake3-") {
+		return shadowsocks2022Credentials{}, fmt.Errorf("unsupported Shadowsocks method %q", method)
+	}
+	serverKey, _ := settings["password"].(string)
+	if !validShadowsocksClientKey(method, serverKey) {
+		return shadowsocks2022Credentials{}, fmt.Errorf("Shadowsocks server key is unavailable")
+	}
+	if !validShadowsocksClientKey(method, clientKey) {
+		return shadowsocks2022Credentials{}, fmt.Errorf("Shadowsocks client key is unavailable")
+	}
+	return shadowsocks2022Credentials{method: method, serverKey: serverKey, clientKey: clientKey}, nil
+}
+
+func (c shadowsocks2022Credentials) combinedPassword() string {
+	return c.serverKey + ":" + c.clientKey
+}
+
+func buildShadowsocksShareLink(line model.LineProfile, credentials shadowsocks2022Credentials) string {
+	// SIP022 requires its method, server PSK, and user PSK as three plain
+	// percent-encoded fields. Unlike legacy SIP002, do not Base64 userinfo.
+	userInfo := strings.Join([]string{
+		url.QueryEscape(credentials.method),
+		url.QueryEscape(credentials.serverKey),
+		url.QueryEscape(credentials.clientKey),
+	}, ":")
+	return fmt.Sprintf("ss://%s@%s:%d#%s", userInfo, formatShareHost(line.EntryHost), line.EntryPort, url.QueryEscape(line.Name))
 }
 
 func formatShareHost(host string) string {

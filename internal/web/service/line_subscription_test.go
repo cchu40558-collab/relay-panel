@@ -122,7 +122,8 @@ func TestRealityClashSubscriptionDoesNotLeakPrivateKeyAndExpires(t *testing.T) {
 
 func TestShadowsocksClashSubscriptionYAML(t *testing.T) {
 	setupLineValidityDB(t)
-	password := randomShadowsocksClientKey(defaultShadowsocksMethod)
+	serverKey := randomShadowsocksClientKey(defaultShadowsocksMethod)
+	clientKey := randomShadowsocksClientKey(defaultShadowsocksMethod)
 	inbound := &model.Inbound{
 		Tag:      "line-ss-in",
 		Enable:   true,
@@ -130,8 +131,9 @@ func TestShadowsocksClashSubscriptionYAML(t *testing.T) {
 		Port:     30080,
 		Protocol: model.Shadowsocks,
 		Settings: mustJSON(map[string]any{
-			"method":  defaultShadowsocksMethod,
-			"clients": []map[string]any{{"email": "line-1-user", "password": password}},
+			"method":   defaultShadowsocksMethod,
+			"password": serverKey,
+			"clients":  []map[string]any{{"email": "line-1-user", "password": clientKey}},
 		}),
 	}
 	if err := database.GetDB().Create(inbound).Error; err != nil {
@@ -150,7 +152,7 @@ func TestShadowsocksClashSubscriptionYAML(t *testing.T) {
 	if err := database.GetDB().Create(line).Error; err != nil {
 		t.Fatalf("create Shadowsocks line: %v", err)
 	}
-	client := &model.ClientRecord{Email: lineManagedClientEmail(line.Id), SubID: lineManagedClientSubID(line.Id), Password: password, Enable: true}
+	client := &model.ClientRecord{Email: lineManagedClientEmail(line.Id), SubID: lineManagedClientSubID(line.Id), Password: clientKey, Enable: true}
 	if err := database.GetDB().Create(client).Error; err != nil {
 		t.Fatalf("create managed Shadowsocks client: %v", err)
 	}
@@ -171,7 +173,7 @@ func TestShadowsocksClashSubscriptionYAML(t *testing.T) {
 		t.Fatalf("Shadowsocks proxies = %#v", document["proxies"])
 	}
 	proxy, _ := proxies[0].(map[string]any)
-	if proxy["type"] != "ss" || proxy["server"] != "203.0.113.10" || proxy["port"] != uint64(30080) || proxy["cipher"] != defaultShadowsocksMethod || proxy["password"] != password || proxy["udp"] != false {
+	if proxy["type"] != "ss" || proxy["server"] != "203.0.113.10" || proxy["port"] != uint64(30080) || proxy["cipher"] != defaultShadowsocksMethod || proxy["password"] != serverKey+":"+clientKey || proxy["udp"] != false {
 		t.Fatalf("Shadowsocks proxy = %#v", proxy)
 	}
 	if _, hasUUID := proxy["uuid"]; hasUUID {

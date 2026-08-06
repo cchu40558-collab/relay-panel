@@ -245,7 +245,11 @@ func buildLineClashProxy(line model.LineProfile, inbound *model.Inbound, config 
 		}
 		return proxy, nil
 	case LineTypeShadowsocks:
-		password, err := lineManagedShadowsocksPassword(line.Id)
+		clientKey, err := lineManagedShadowsocksPassword(line.Id)
+		if err != nil {
+			return nil, err
+		}
+		credentials, err := shadowsocks2022ShareCredentials(inbound, clientKey)
 		if err != nil {
 			return nil, err
 		}
@@ -254,8 +258,8 @@ func buildLineClashProxy(line model.LineProfile, inbound *model.Inbound, config 
 			"type":     "ss",
 			"server":   strings.Trim(host, "[]"),
 			"port":     line.EntryPort,
-			"cipher":   defaultShadowsocksMethod,
-			"password": password,
+			"cipher":   credentials.method,
+			"password": credentials.combinedPassword(),
 			"udp":      false,
 		}, nil
 	default:

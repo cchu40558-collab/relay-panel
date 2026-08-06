@@ -3,7 +3,9 @@ package controller
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -288,7 +290,9 @@ func TestLineController_ShadowsocksDirectApplyAndShare(t *testing.T) {
 	if err := json.Unmarshal(share.Obj, &response); err != nil {
 		t.Fatalf("decode Shadowsocks share: %v", err)
 	}
-	if response.Protocol != "shadowsocks" || len(response.Links) != 1 || response.Links[0].Label != "Shadowsocks" || !strings.HasPrefix(response.Links[0].URI, "ss://") || strings.Contains(string(share.Obj), client.Password) {
+	expectedShare := fmt.Sprintf("ss://%s:%s:%s@203.0.113.10:30080#ss-direct",
+		url.QueryEscape("2022-blake3-aes-128-gcm"), url.QueryEscape(serverKey), url.QueryEscape(client.Password))
+	if response.Protocol != "shadowsocks" || len(response.Links) != 1 || response.Links[0].Label != "Shadowsocks" || response.Links[0].URI != expectedShare || strings.Contains(string(share.Obj), client.Password) {
 		t.Fatalf("Shadowsocks share = %+v", response)
 	}
 }
