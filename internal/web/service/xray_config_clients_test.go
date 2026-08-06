@@ -107,3 +107,48 @@ func TestGetXrayConfig_EnabledClientsStillEmitted(t *testing.T) {
 		t.Errorf("client id not carried through: %#v", entry)
 	}
 }
+
+func TestGetXrayConfig_PreservesShadowsocks2022ServerKey(t *testing.T) {
+	setupSettingTestDB(t)
+	const serverKey = "AQIDBAUGBwgJCgsMDQ4PEA=="
+	const clientKey = "ERITFBUWFxgZGhscHR4fIA=="
+
+	inbound := &model.Inbound{
+		Tag:      "ss2022-in",
+		Enable:   true,
+		Port:     43103,
+		Protocol: model.Shadowsocks,
+		Settings: `{"method":"2022-blake3-aes-128-gcm","password":"` + serverKey + `","clients":[]}`,
+	}
+	if err := database.GetDB().Create(inbound).Error; err != nil {
+		t.Fatalf("create Shadowsocks inbound: %v", err)
+	}
+	if err := (&ClientService{}).SyncInbound(nil, inbound.Id, []model.Client{{
+		Email: "ss2022-user", Password: clientKey, Enable: true,
+	}}); err != nil {
+		t.Fatalf("sync Shadowsocks client: %v", err)
+	}
+
+	cfg, err := (&XrayService{}).GetXrayConfig()
+	if err != nil {
+		t.Fatalf("GetXrayConfig: %v", err)
+	}
+	for _, generated := range cfg.InboundConfigs {
+		if generated.Tag != inbound.Tag {
+			continue
+		}
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(generated.Settings), &settings); err != nil {
+			t.Fatalf("unmarshal generated Shadowsocks settings: %v", err)
+		}
+		if settings["password"] != serverKey {
+			t.Fatalf("generated server key = %#v, want %q", settings["password"], serverKey)
+		}
+		clients, _ := settings["clients"].([]any)
+		if len(clients) != 1 || clients[0].(map[string]any)["password"] != clientKey {
+			t.Fatalf("generated Shadowsocks clients = %#v", settings["clients"])
+		}
+		return
+	}
+	t.Fatalf("generated config is missing inbound %q", inbound.Tag)
+}

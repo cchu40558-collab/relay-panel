@@ -254,6 +254,11 @@ func TestLineController_ShadowsocksDirectApplyAndShare(t *testing.T) {
 	if settings["method"] != "2022-blake3-aes-128-gcm" {
 		t.Fatalf("Shadowsocks settings method = %#v", settings)
 	}
+	serverKey, _ := settings["password"].(string)
+	decodedServerKey, err := base64.StdEncoding.DecodeString(serverKey)
+	if err != nil || len(decodedServerKey) != 16 {
+		t.Fatalf("Shadowsocks server key = %#v", settings["password"])
+	}
 	var client model.ClientRecord
 	if err := database.GetDB().Where("email = ?", "line-1-user").First(&client).Error; err != nil {
 		t.Fatalf("load managed Shadowsocks client: %v", err)
@@ -261,6 +266,9 @@ func TestLineController_ShadowsocksDirectApplyAndShare(t *testing.T) {
 	decodedPassword, err := base64.StdEncoding.DecodeString(client.Password)
 	if client.UUID != "" || err != nil || len(decodedPassword) != 16 {
 		t.Fatalf("managed Shadowsocks client = %+v", client)
+	}
+	if serverKey == client.Password {
+		t.Fatal("Shadowsocks server key must not reuse the shared client key")
 	}
 	var clientInbound model.ClientInbound
 	if err := database.GetDB().Where("client_id = ? AND inbound_id = ?", client.Id, inbound.Id).First(&clientInbound).Error; err != nil {

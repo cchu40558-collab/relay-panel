@@ -908,6 +908,13 @@ func (s *LineService) checkLine(id int, persist bool) (*LineCheckResponse, error
 			add("Xray 入站", "fail", "Xray 入站已禁用")
 		} else {
 			add("Xray 入站", "pass", fmt.Sprintf("%s:%d %s", inbound.Listen, inbound.Port, inbound.Protocol))
+			if line.Type == LineTypeShadowsocks {
+				if err := checkLineInboundListener(inbound); err != nil {
+					add("Xray 运行状态", "fail", err.Error())
+				} else {
+					add("Xray 运行状态", "pass", "Shadowsocks 入站端口正在监听")
+				}
+			}
 		}
 
 		outboundTag := line.OutboundTag
@@ -997,6 +1004,22 @@ func (s *LineService) checkLine(id int, persist bool) (*LineCheckResponse, error
 	}
 
 	return resp, nil
+}
+
+func checkLineInboundListener(inbound *model.Inbound) error {
+	if inbound == nil || inbound.Port <= 0 {
+		return fmt.Errorf("Shadowsocks 入站端口未配置")
+	}
+
+	host := strings.TrimSpace(inbound.Listen)
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	conn, err := (&net.Dialer{Timeout: time.Second}).Dial("tcp", net.JoinHostPort(host, strconv.Itoa(inbound.Port)))
+	if err != nil {
+		return fmt.Errorf("Shadowsocks 入站未监听 %s: %w", net.JoinHostPort(host, strconv.Itoa(inbound.Port)), err)
+	}
+	return conn.Close()
 }
 
 func (s *LineService) CheckLineWithInboundLatency(id int, inboundLatencyMs int64) (*LineCheckResponse, error) {
@@ -1908,7 +1931,8 @@ func applyShadowsocksXray(tx *gorm.DB, line *model.LineProfile, outbound *model.
 	if err != nil {
 		return 0, err
 	}
-	inbound := buildShadowsocksInbound(line, inboundTag, password)
+	serverKey := shadowsocksServerKeyFromSettings(existing.Settings)
+	inbound := buildShadowsocksInbound(line, inboundTag, serverKey, password)
 	if existingID > 0 {
 		inbound.Id = existingID
 		if err := tx.Model(&existing).Updates(map[string]any{
@@ -2099,11 +2123,15 @@ func buildRealityInbound(line *model.LineProfile, inboundTag string, config map[
 	}
 }
 
-func buildShadowsocksInbound(line *model.LineProfile, inboundTag string, password string) *model.Inbound {
+func buildShadowsocksInbound(line *model.LineProfile, inboundTag string, serverKey string, clientKey string) *model.Inbound {
+	if !validShadowsocksClientKey(defaultShadowsocksMethod, serverKey) {
+		serverKey = randomShadowsocksClientKey(defaultShadowsocksMethod)
+	}
 	settings := mustJSON(map[string]any{
-		"method": defaultShadowsocksMethod,
+		"method":   defaultShadowsocksMethod,
+		"password": serverKey,
 		"clients": []map[string]any{{
-			"password": password,
+			"password": clientKey,
 			"email":    lineManagedClientEmail(line.Id),
 			"enable":   true,
 		}},
@@ -2130,6 +2158,20 @@ func buildShadowsocksInbound(line *model.LineProfile, inboundTag string, passwor
 		ShareAddrStrategy: "custom",
 		ShareAddr:         line.EntryHost,
 	}
+}
+
+// shadowsocksServerKeyFromSettings keeps the SS2022 server PSK stable across
+// re-applies. It is separate from the managed client key and is never shared.
+func shadowsocksServerKeyFromSettings(settings string) string {
+	var values map[string]any
+	if err := json.Unmarshal([]byte(settings), &values); err != nil {
+		return ""
+	}
+	key, _ := values["password"].(string)
+	if !validShadowsocksClientKey(defaultShadowsocksMethod, key) {
+		return ""
+	}
+	return key
 }
 
 // upsertLineManagedClient keeps the generated share-link identity in 3x-ui's
