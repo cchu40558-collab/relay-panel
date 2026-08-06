@@ -23,6 +23,7 @@ const routes: RouteObject[] = [
       { path: 'lines/deploy/cloudflare', element: withSuspense(<LinesPage />) },
 		{ path: 'lines/deploy/bunny', element: withSuspense(<LinesPage />) },
       { path: 'lines/deploy/reality', element: withSuspense(<LinesPage />) },
+		{ path: 'lines/deploy/shadowsocks', element: withSuspense(<LinesPage />) },
       { path: 'diagnostics', element: withSuspense(<LinesPage />) },
 	  { path: 'central-access', element: withSuspense(<CentralAccessPage />) },
       { path: '*', element: <Navigate to="/lines" replace /> },
