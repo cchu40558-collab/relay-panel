@@ -43,6 +43,7 @@ func migrationModels() []any {
 		&model.Node{},
 		&model.ApiToken{},
 		&model.CentralAccessToken{},
+		&model.CentralManagementEndpoint{},
 		&model.Inbound{},
 		&xray.ClientTraffic{},
 		&model.OutboundTraffics{},

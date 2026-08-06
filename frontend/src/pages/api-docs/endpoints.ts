@@ -1401,6 +1401,36 @@ export const sections: readonly Section[] = [
   },
 
   {
+    id: 'central-management',
+    title: 'Central Management Entry',
+    description:
+      'Configure the dedicated HTTPS management entry used by RP Console to reach this Relay Panel. The certificate and private key are uploaded as multipart files, stored only as root-owned files on the server, and never returned by the API.',
+    endpoints: [
+      {
+        method: 'GET',
+        path: '/panel/api/setting/centralManagement',
+        summary: 'Return the safe central-management status, including domain, port, certificate fingerprint, expiration, and listener state.',
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/setting/centralManagement/apply',
+        summary: 'Validate and install the central-management HTTPS entry, then bind the panel service to loopback and restart it.',
+        params: [
+          { name: 'domain', in: 'body (multipart)', type: 'string', desc: 'Cloudflare-proxied management domain name, without scheme or path.' },
+          { name: 'port', in: 'body (multipart)', type: 'integer', desc: 'Cloudflare-supported HTTPS port: 443, 2053, 2083, 2087, 2096, or 8443.' },
+          { name: 'certificate', in: 'body (multipart)', type: 'file', desc: 'Cloudflare Origin Certificate PEM file.' },
+          { name: 'privateKey', in: 'body (multipart)', type: 'file', desc: 'Matching Origin Certificate private-key PEM file.' },
+        ],
+      },
+      {
+        method: 'POST',
+        path: '/panel/api/setting/centralManagement/disable',
+        summary: 'Remove the dedicated central-management HTTPS entry, restore public panel listening, and restart the panel service.',
+      },
+    ],
+  },
+
+  {
     id: 'xray-settings',
     title: 'Xray Settings',
     description:
